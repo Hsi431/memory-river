@@ -1,6 +1,9 @@
 <div align="center">
 
-# 🌊 Memory River
+<img src=".github/assets/hero.png" alt="Memory River — 給長時間運行 agent 的本地優先記憶引擎" width="100%">
+
+<br>
+<br>
 
 **_給 AI agent 的長期記憶 —— 會褪色的工作摘要、會留存的事實、永遠能回頭重讀的完整原文。_**
 

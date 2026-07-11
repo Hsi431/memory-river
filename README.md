@@ -1,6 +1,9 @@
 <div align="center">
 
-# 🌊 Memory River
+<img src=".github/assets/hero.png" alt="Memory River — local-first memory engine for long-running agents" width="100%">
+
+<br>
+<br>
 
 **_Long-term memory for AI agents — a working recap that fades, facts that persist, and the full transcript it can always go back and re-read._**
 
