@@ -13,6 +13,6 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@memory-river/core": "0.1.0"
+    "@memory-river/core": "0.2.0"
   }
 }

@@ -6,7 +6,7 @@
 
 Most "agent memory" is a vector store with a save button: one flat pile of embeddings you write to and search. Memory River is a memory *system* modeled on how memory actually works — it keeps information at **three timescales**, retrieves it in **two passes**, lets memories **metabolize** over time, and can trace anything it distilled back to the exact turns it came from. You inject your own embedding and LLM providers; the engine is host-independent.
 
-> `0.1.x` is an early API. Review upgrades before adopting a new minor release.
+> `0.2.x` is an early API. Review upgrades before adopting a new minor release.
 
 ## The idea: three timescales of memory
 

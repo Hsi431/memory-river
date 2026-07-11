@@ -17,6 +17,6 @@
     "onnxruntime-node": "1.14.0"
   },
   "devDependencies": {
-    "@memory-river/core": "0.1.0"
+    "@memory-river/core": "0.2.0"
   }
 }

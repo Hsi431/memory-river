@@ -1,9 +1,32 @@
 {
   "name": "@memory-river/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-neutral long-term memory engine for Node.js agents.",
+  "private": false,
   "license": "Apache-2.0",
-  "repository": "https://github.com/Hsi431/memory-river",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hsi431/memory-river.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/Hsi431/memory-river#readme",
+  "bugs": "https://github.com/Hsi431/memory-river/issues",
+  "keywords": [
+    "memory",
+    "agent",
+    "llm",
+    "long-term-memory",
+    "lancedb"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,6 +43,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build",
     "pretest": "npm run build",
     "test": "node --test tests/*.test.mjs tests/*.test.ts"
   },
