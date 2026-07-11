@@ -37,7 +37,13 @@ async function withTempStore(prefix, fn) {
     await store.shutdown?.().catch?.(() => {});
     if (oldHome === undefined) delete process.env.HOME;
     else process.env.HOME = oldHome;
-    fs.rmSync(paths.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    try {
+      fs.rmSync(paths.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    } catch (error) {
+      // LanceDB 背景寫入與 teardown rm 的競態在慢跑者(GitHub 2-core)上
+      // 連 5 秒重試都可能輸。斷言已全部跑完,暫存目錄清不掉只警告不紅測。
+      console.warn(`[hooks-effectiveness] best-effort teardown failed for ${paths.root}:`, error?.code ?? error);
+    }
   }
 }
 

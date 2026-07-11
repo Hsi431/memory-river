@@ -19,6 +19,28 @@ async function main(): Promise<void> {
   const config = configFromEnv();
   let lock: ServiceLock | null = null;
   let stopping = false;
+  let river: ReturnType<typeof createRiverFromEnv>['river'] | null = null;
+  let service: MemoryRiverHttpService | null = null;
+
+  const stop = async (exitCode?: number) => {
+    if (stopping) return;
+    stopping = true;
+    await service?.close().catch(error => {
+      console.error('[mr-serve] HTTP shutdown failed:', error);
+    });
+    await river?.stop().catch(error => {
+      console.error('[mr-serve] river shutdown failed:', error);
+    });
+    await lock?.release().catch(error => {
+      console.error('[mr-serve] lock cleanup failed:', error);
+    });
+    if (exitCode !== undefined) process.exit(exitCode);
+  };
+
+  // 訊號處理器必須在拿鎖之前掛好:反過來會留一個「lockfile 已存在、
+  // SIGTERM 卻走預設終止」的空窗,行程被殺後殘留 stale lockfile。
+  process.once('SIGINT', () => void stop(130));
+  process.once('SIGTERM', () => void stop(143));
 
   try {
     lock = await acquireServiceLock(config.dataDir);
@@ -28,26 +50,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { river, sessionKey } = createRiverFromEnv();
-  let service: MemoryRiverHttpService | null = null;
-
-  const stop = async (exitCode?: number) => {
-    if (stopping) return;
-    stopping = true;
-    await service?.close().catch(error => {
-      console.error('[mr-serve] HTTP shutdown failed:', error);
-    });
-    await river.stop().catch(error => {
-      console.error('[mr-serve] river shutdown failed:', error);
-    });
-    await lock?.release().catch(error => {
-      console.error('[mr-serve] lock cleanup failed:', error);
-    });
-    if (exitCode !== undefined) process.exit(exitCode);
-  };
-
-  process.once('SIGINT', () => void stop(130));
-  process.once('SIGTERM', () => void stop(143));
+  const created = createRiverFromEnv();
+  river = created.river;
+  const sessionKey = created.sessionKey;
 
   try {
     await river.start();
