@@ -8,7 +8,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-22C55E?style=flat-square)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Node](https://img.shields.io/badge/Node-20%20%7C%2022-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node-22%20%7C%2024-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![LanceDB](https://img.shields.io/badge/LanceDB-storage-FF6B35?style=flat-square)](https://lancedb.com/)
 [![Ollama](https://img.shields.io/badge/Embeddings-local%20via%20Ollama-000000?style=flat-square&logo=ollama)](https://ollama.com/)
 
@@ -137,7 +137,7 @@ flowchart TD
 
 ## 🚀 Quick Start
 
-**Prerequisites:** Node 20+, and [Ollama](https://ollama.com/) running locally for embeddings (fully local — no cloud account needed):
+**Prerequisites:** Node 22+, and [Ollama](https://ollama.com/) running locally for embeddings (fully local — no cloud account needed):
 
 ```bash
 ollama pull hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF
@@ -347,7 +347,7 @@ On repeated failures: first trim the trailing error messages and retry → then 
 
 ## 🧭 Status & Roadmap
 
-**Status:** actively dogfooded — Memory River is the live memory layer behind the author's own agents, both as an OpenClaw plugin and as the Claude Code push layer, running daily on real conversations. CI (Node 20/22) gates every change: clean-checkout build, typecheck across all workspaces, full test suite. APIs may still move before a 1.0.
+**Status:** actively dogfooded — Memory River is the live memory layer behind the author's own agents, both as an OpenClaw plugin and as the Claude Code push layer, running daily on real conversations. CI (Node 22/24) gates every change: clean-checkout build, typecheck across all workspaces, full test suite. APIs may still move before a 1.0.
 
 **Roadmap:**
 
