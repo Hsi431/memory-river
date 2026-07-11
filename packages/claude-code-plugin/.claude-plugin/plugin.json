@@ -1,0 +1,5 @@
+{
+  "name": "memory-river",
+  "description": "Claude Code hooks for memory-river recall injection and transcript archiving.",
+  "version": "0.1.0"
+}

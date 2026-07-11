@@ -1,0 +1,43 @@
+{
+  "sampleId": "conv-26",
+  "category": 1,
+  "_notes": {
+    "13": "One item: 'X or Y' is one career path / alternatives, not an enumerated set.",
+    "47": "Split mentors / family / friends: cat1 is enumeration, 'and'-joined DISTINCT entities are separate set members (R8 signoff).",
+    "60": "Split clarinet / violin: enumeration of distinct instruments; keeping them joined made a violin-only answer unmatchable (R8 signoff)."
+  },
+  "items": {
+    "3": ["Adoption agencies"],
+    "4": ["Transgender woman"],
+    "7": ["Single"],
+    "11": ["Sweden"],
+    "13": ["counseling or mental health for Transgender people"],
+    "15": ["pottery", "camping", "painting", "swimming"],
+    "18": ["beach", "mountains", "forest"],
+    "19": ["dinosaurs", "nature"],
+    "23": ["Nothing is Impossible", "Charlotte's Web"],
+    "24": ["Running", "pottery"],
+    "32": ["Pride parade", "school speech", "support group"],
+    "34": ["Mentoring program", "school speech"],
+    "37": ["sunset"],
+    "38": ["Pottery", "painting", "camping", "museum", "swimming", "hiking"],
+    "39": ["Joining activist group", "going to pride parades", "participating in an art show", "mentoring program"],
+    "40": ["2"],
+    "43": ["abstract art"],
+    "47": ["mentors", "family", "friends"],
+    "48": ["bowls", "cup"],
+    "51": ["Horse", "sunset", "sunrise"],
+    "52": ["Oliver", "Luna", "Bailey"],
+    "55": ["Sunsets"],
+    "56": ["Rainbow flag", "transgender symbol"],
+    "60": ["clarinet", "violin"],
+    "61": ["Summer Sounds", "Matt Patterson"],
+    "65": ["Changes to her body", "losing unsupportive friends"],
+    "66": ["Roast marshmallows", "tell stories"],
+    "70": ["Poetry reading", "conference"],
+    "71": ["Becoming Nicole"],
+    "75": ["3"],
+    "76": ["19 October 2023"],
+    "78": ["Figurines", "shoes"]
+  }
+}

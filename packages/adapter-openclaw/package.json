@@ -1,0 +1,33 @@
+{
+  "name": "@memory-river/adapter-openclaw",
+  "version": "0.1.0",
+  "description": "OpenClaw adapter for the Memory River core engine.",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/Hsi431/memory-river",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@memory-river/core": "0.1.0",
+    "@sinclair/typebox": "^0.32.0"
+  },
+  "devDependencies": {
+    "openclaw": "2026.6.11"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "memory-river",
+  "owner": { "name": "Hsi431" },
+  "plugins": [
+    {
+      "name": "memory-river",
+      "source": "./packages/claude-code-plugin",
+      "description": "Push-layer memory for Claude Code: auto recall injection on every prompt + transcript archiving via local mr-serve."
+    }
+  ]
+}

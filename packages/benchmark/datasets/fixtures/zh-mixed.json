@@ -1,0 +1,292 @@
+{
+  "version": "zh-mixed-v1.1",
+  "description": "Chinese-first end-to-end memory benchmark fixture. Pure fiction, no real persons. A single user (阿哲) chats with an assistant (小幫手) across 9 sessions from March to May 2026, mixing daily life and work. Authored to exercise the full chain in one language: concentrate → recall → rehydrate → Chinese QA. Temporal questions use relative wording in the dialogue so absolute dates must come from session timestamps via rehydrate; multi-hop questions join facts across sessions with bridge entities and distractors; corrected values exercise supersession; one-off details stress precise entry_ids rehydrate.",
+  "speakerA": "阿哲",
+  "speakerB": "小幫手",
+  "sessions": [
+    {
+      "index": 1,
+      "dateTime": "2026-03-02T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s1-1", "text": "我這週開始接一個新專案,代號叫「海狸」,我負責後端這塊。" },
+        { "speaker": "小幫手", "diaId": "s1-2", "text": "聽起來很關鍵,後端穩不穩定常常決定整個專案。生活上最近還好嗎?" },
+        { "speaker": "阿哲", "diaId": "s1-3", "text": "還行,就是下週要搬家,有點忙亂。" },
+        { "speaker": "小幫手", "diaId": "s1-4", "text": "搬家辛苦了,記得提前打包,別到最後一刻才弄。" }
+      ]
+    },
+    {
+      "index": 2,
+      "dateTime": "2026-03-09T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s2-1", "text": "我昨天把家搬完了!新家在板橋,離公司近很多。" },
+        { "speaker": "小幫手", "diaId": "s2-2", "text": "太好了,通勤省下不少時間。海狸那邊進度怎麼樣?" },
+        { "speaker": "阿哲", "diaId": "s2-3", "text": "遇到一個麻煩,資料庫連線在高併發的時候會斷掉。" },
+        { "speaker": "小幫手", "diaId": "s2-4", "text": "高併發斷線蠻常見的,通常先從連線設定查起。" },
+        { "speaker": "阿哲", "diaId": "s2-5", "text": "對了,海狸要跟供應商談價格的事,我交給同事小薇去處理了。" }
+      ]
+    },
+    {
+      "index": 3,
+      "dateTime": "2026-03-16T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s3-1", "text": "那個連線斷掉的 bug,我昨天找到根因了,是連線池設得太小。" },
+        { "speaker": "小幫手", "diaId": "s3-2", "text": "找到根因就好辦了。打算怎麼調?" },
+        { "speaker": "阿哲", "diaId": "s3-3", "text": "先把連線池從 10 調到 50 試試看。" },
+        { "speaker": "小幫手", "diaId": "s3-4", "text": "可以,記得改完壓測一下確認。生活上有什麼事要記嗎?" },
+        { "speaker": "阿哲", "diaId": "s3-5", "text": "媽媽生日快到了,下週六要記得去訂蛋糕。" }
+      ]
+    },
+    {
+      "index": 4,
+      "dateTime": "2026-03-23T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s4-1", "text": "海狸的 demo 後天就要了,有點緊張。" },
+        { "speaker": "小幫手", "diaId": "s4-2", "text": "還有一點時間準備,放輕鬆。供應商那邊談得如何?" },
+        { "speaker": "阿哲", "diaId": "s4-3", "text": "小薇很猛,把供應商的價格砍到八折,幫公司省了不少。" },
+        { "speaker": "小幫手", "diaId": "s4-4", "text": "八折很有感,小薇談判功力不錯!" },
+        { "speaker": "阿哲", "diaId": "s4-5", "text": "哈哈對。對了,我家那隻貓最近超黏人,牠叫麻糬。" }
+      ]
+    },
+    {
+      "index": 5,
+      "dateTime": "2026-03-30T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s5-1", "text": "demo 很成功!客戶反應比預期好很多。" },
+        { "speaker": "小幫手", "diaId": "s5-2", "text": "恭喜!連線那個問題後來穩定了嗎?" },
+        { "speaker": "阿哲", "diaId": "s5-3", "text": "穩了,不過要更正一下,連線池最後不是 50,我後來調到 100 才真的穩定。" },
+        { "speaker": "小幫手", "diaId": "s5-4", "text": "了解,100 比較有餘裕。接下來有什麼計畫?" },
+        { "speaker": "阿哲", "diaId": "s5-5", "text": "五月想安排去日本玩一趟,好好放鬆。" }
+      ]
+    },
+    {
+      "index": 6,
+      "dateTime": "2026-04-13T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s6-1", "text": "上週五海狸的監控第一次整晚都沒有告警,總算能放心睡了。" },
+        { "speaker": "小幫手", "diaId": "s6-2", "text": "穩定下來就好。最近工作上還有新的安排嗎?" },
+        { "speaker": "阿哲", "diaId": "s6-3", "text": "今天又接了第二個專案,代號叫「雨燕」,我負責資料同步。" },
+        { "speaker": "小幫手", "diaId": "s6-4", "text": "同時顧兩個專案會比較忙,資料同步先把頻率和壓測條件定清楚。" },
+        { "speaker": "阿哲", "diaId": "s6-5", "text": "會來幫忙壓測的同事叫子晴,她老家在嘉義。" },
+        { "speaker": "阿哲", "diaId": "s6-6", "text": "另外,外婆住在宜蘭,我後天要寄一盒桂花糕給她,這次花了320元。" }
+      ]
+    },
+    {
+      "index": 7,
+      "dateTime": "2026-04-20T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s7-1", "text": "我昨天去宜蘭看外婆,送她一條靛藍色的圍巾,她很喜歡。" },
+        { "speaker": "小幫手", "diaId": "s7-2", "text": "有親自去陪她一定比寄東西更開心。雨燕進展如何?" },
+        { "speaker": "阿哲", "diaId": "s7-3", "text": "雨燕目前先把資料同步頻率定成每15分鐘一次。" },
+        { "speaker": "小幫手", "diaId": "s7-4", "text": "先觀察實際資料量,之後再決定要不要縮短。" },
+        { "speaker": "阿哲", "diaId": "s7-5", "text": "照現在的排程,四週後要正式上線。" },
+        { "speaker": "阿哲", "diaId": "s7-6", "text": "昨天雨燕第一次同步跑通後,我去青禾小館慶祝,點了剝皮辣椒雞。" }
+      ]
+    },
+    {
+      "index": 8,
+      "dateTime": "2026-04-27T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s8-1", "text": "雨燕的同步設定要更正,不是每15分鐘,最後決定改成每5分鐘一次。" },
+        { "speaker": "小幫手", "diaId": "s8-2", "text": "了解,每5分鐘一次才是目前的最終設定。" },
+        { "speaker": "阿哲", "diaId": "s8-3", "text": "兩週後會做正式壓測,子晴已經在準備測試資料。" },
+        { "speaker": "小幫手", "diaId": "s8-4", "text": "那要記得把尖峰流量也放進測試情境。" },
+        { "speaker": "阿哲", "diaId": "s8-5", "text": "生活上有件小事,姑姑從鹿港寄來一罐「桂雨烏龍」給我。" },
+        { "speaker": "阿哲", "diaId": "s8-6", "text": "還有,我後天要帶麻糬去獸醫院,掛號費是450元。" }
+      ]
+    },
+    {
+      "index": 9,
+      "dateTime": "2026-05-04T12:00:00+08:00",
+      "turns": [
+        { "speaker": "阿哲", "diaId": "s9-1", "text": "我昨天在板橋跟小薇吃飯,她說海狸最近的監控數字很穩。" },
+        { "speaker": "小幫手", "diaId": "s9-2", "text": "海狸穩定是好消息。雨燕的上線日期有變動嗎?" },
+        { "speaker": "阿哲", "diaId": "s9-3", "text": "有,要更正原本四週後上線的安排,最新日期改成5月25日。" },
+        { "speaker": "小幫手", "diaId": "s9-4", "text": "收到,雨燕最終以上線日期5月25日為準。" },
+        { "speaker": "阿哲", "diaId": "s9-5", "text": "人力也定了,小薇接手雨燕的供應商合約,子晴繼續負責壓測驗收。" },
+        { "speaker": "小幫手", "diaId": "s9-6", "text": "分工很清楚,你就能專心顧資料同步和上線品質。" }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "question": "阿哲在海狸專案裡負責哪一塊?",
+      "answer": "後端",
+      "evidence": ["s1-1"],
+      "category": "factual"
+    },
+    {
+      "question": "阿哲養的貓叫什麼名字?",
+      "answer": "麻糬",
+      "evidence": ["s4-5"],
+      "category": "factual"
+    },
+    {
+      "question": "阿哲是哪一天搬進新家的?",
+      "answer": "2026年3月8日",
+      "evidence": ["s2-1"],
+      "category": "temporal"
+    },
+    {
+      "question": "海狸專案的 demo 是哪一天?",
+      "answer": "2026年3月25日",
+      "evidence": ["s4-1"],
+      "category": "temporal"
+    },
+    {
+      "question": "海狸專案資料庫在高併發下斷線的根本原因是什麼?",
+      "answer": "連線池設得太小",
+      "evidence": ["s2-3", "s3-1"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "阿哲最後把連線池的大小調到多少?",
+      "answer": "100",
+      "evidence": ["s3-3", "s5-3"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "小薇幫哪個專案把供應商價格談到幾折?",
+      "answer": "海狸專案,八折",
+      "evidence": ["s2-5", "s4-3"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "阿哲在雨燕專案裡負責什麼?",
+      "answer": "資料同步",
+      "evidence": ["s6-3"],
+      "category": "factual"
+    },
+    {
+      "question": "協助壓測的子晴老家在哪裡?",
+      "answer": "嘉義",
+      "evidence": ["s6-5"],
+      "category": "factual"
+    },
+    {
+      "question": "阿哲買給外婆的桂花糕花了多少錢?",
+      "answer": "320元",
+      "evidence": ["s6-6"],
+      "category": "factual"
+    },
+    {
+      "question": "阿哲去看外婆時送了什麼?",
+      "answer": "靛藍色圍巾",
+      "evidence": ["s7-1"],
+      "category": "factual"
+    },
+    {
+      "question": "阿哲在青禾小館點了哪道菜?",
+      "answer": "剝皮辣椒雞",
+      "evidence": ["s7-6"],
+      "category": "factual"
+    },
+    {
+      "question": "姑姑從鹿港寄來的茶叫什麼?",
+      "answer": "桂雨烏龍",
+      "evidence": ["s8-5"],
+      "category": "factual"
+    },
+    {
+      "question": "麻糬去獸醫院的掛號費是多少?",
+      "answer": "450元",
+      "evidence": ["s8-6"],
+      "category": "factual"
+    },
+    {
+      "question": "誰接手了雨燕的供應商合約?",
+      "answer": "小薇",
+      "evidence": ["s9-5"],
+      "category": "factual"
+    },
+    {
+      "question": "海狸的監控第一次整晚沒有告警是哪一天?",
+      "answer": "2026年4月10日",
+      "evidence": ["s6-1"],
+      "category": "temporal"
+    },
+    {
+      "question": "阿哲預計哪一天寄桂花糕給外婆?",
+      "answer": "2026年4月15日",
+      "evidence": ["s6-6"],
+      "category": "temporal"
+    },
+    {
+      "question": "阿哲是哪一天去宜蘭看外婆的?",
+      "answer": "2026年4月19日",
+      "evidence": ["s7-1"],
+      "category": "temporal"
+    },
+    {
+      "question": "雨燕原先按四週後上線的排程會在哪一天上線?",
+      "answer": "2026年5月18日",
+      "evidence": ["s7-5"],
+      "category": "temporal"
+    },
+    {
+      "question": "雨燕正式壓測安排在哪一天?",
+      "answer": "2026年5月11日",
+      "evidence": ["s8-3"],
+      "category": "temporal"
+    },
+    {
+      "question": "阿哲預計哪一天帶麻糬去獸醫院?",
+      "answer": "2026年4月29日",
+      "evidence": ["s8-6"],
+      "category": "temporal"
+    },
+    {
+      "question": "雨燕資料同步頻率最後定為多久一次?",
+      "answer": "每5分鐘一次",
+      "evidence": ["s7-3", "s8-1"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "雨燕最新的正式上線日期是哪一天?",
+      "answer": "2026年5月25日",
+      "evidence": ["s7-5", "s9-3"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "目前負責雨燕壓測驗收的同事老家在哪裡?",
+      "answer": "嘉義",
+      "evidence": ["s6-5", "s9-5"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "住在宜蘭的外婆後來收到阿哲親自送的什麼禮物?",
+      "answer": "靛藍色圍巾",
+      "evidence": ["s6-6", "s7-1"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "負責雨燕資料同步的阿哲,在第一次同步跑通後吃了什麼?",
+      "answer": "剝皮辣椒雞",
+      "evidence": ["s6-3", "s7-6"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "阿哲養的貓去獸醫院時,掛號費是多少?",
+      "answer": "450元",
+      "evidence": ["s4-5", "s8-6"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "搬到板橋後,阿哲收到姑姑寄來的哪一種茶?",
+      "answer": "桂雨烏龍",
+      "evidence": ["s2-1", "s8-5"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "同時負責海狸後端與雨燕資料同步的阿哲,搬到了哪裡?",
+      "answer": "板橋",
+      "evidence": ["s1-1", "s2-1", "s6-3"],
+      "category": "multi_hop"
+    },
+    {
+      "question": "後來接手雨燕供應商合約的同事,先前替哪個專案把價格談到幾折?",
+      "answer": "海狸專案,八折",
+      "evidence": ["s2-5", "s4-3", "s9-5"],
+      "category": "multi_hop"
+    }
+  ]
+}

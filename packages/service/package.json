@@ -1,0 +1,30 @@
+{
+  "name": "@memory-river/service",
+  "version": "0.1.0",
+  "description": "Loopback HTTP daemon for the Memory River core engine.",
+  "private": false,
+  "license": "Apache-2.0",
+  "repository": "https://github.com/Hsi431/memory-river",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "mr-serve": "./dist/cli.js",
+    "mr": "./dist/mr-cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@memory-river/adapter-mcp": "0.1.0",
+    "@memory-river/core": "0.1.0"
+  }
+}

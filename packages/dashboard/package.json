@@ -1,0 +1,18 @@
+{
+  "name": "@memory-river/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "mr-dash": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.14.0"
+  }
+}

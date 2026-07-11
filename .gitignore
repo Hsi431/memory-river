@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.log
+status-*.json
+test-*.mjs
+.DS_Store
+
+# Local backups
+*.bak-*
+
+# Graphify tool output
+src/graphify-out/
+src/memory/graphify-out/
+src/utils/graphify-out/
+.codegraph/
+
+# 第三方 benchmark 資料集(授權獨立,屬測試輸入,不入庫;只擋根目錄,
+# packages/benchmark/datasets/fixtures 是自製測試資料要入庫)
+/datasets/

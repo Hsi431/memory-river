@@ -1,0 +1,75 @@
+{
+  "version": "b2-synthetic-v1",
+  "description": "Synthetic bilingual (EN/ZH) retrieval-quality fixture for Memory River Benchmark B2. Pure fiction; no real persons or systems. Queries are tagged by kind so vector-only vs BM25-only vs RRF divergence is visible.",
+  "memories": [
+    { "id": "m01", "sessionId": "s1-infra", "category": "fact", "importance": 0.6, "text": "The Nimbus API gateway listens on port 8443 for inbound TLS traffic." },
+    { "id": "m02", "sessionId": "s1-infra", "category": "fact", "importance": 0.6, "text": "Production database backups run every night at 02:30 UTC and are retained for 30 days." },
+    { "id": "m03", "sessionId": "s1-infra", "category": "fact", "importance": 0.5, "text": "The staging cluster uses three worker nodes, each with 16 GB of memory." },
+    { "id": "m04", "sessionId": "s1-infra", "category": "fact", "importance": 0.6, "text": "Rate limiting on the public API is set to 100 requests per minute per API key." },
+    { "id": "m05", "sessionId": "s1-infra", "category": "fact", "importance": 0.6, "text": "Service mesh mutual TLS certificates rotate automatically every 14 days." },
+    { "id": "m06", "sessionId": "s1-infra", "category": "entity", "importance": 0.6, "text": "The feature flag service is named Lighthouse and stores flags in Redis." },
+    { "id": "m07", "sessionId": "s1-infra", "category": "constraint", "importance": 0.7, "text": "Deployments to production require approval from two senior engineers." },
+    { "id": "m08", "sessionId": "s1-infra", "category": "fact", "importance": 0.5, "text": "The CI pipeline runs unit tests, then integration tests, then a security scan." },
+    { "id": "m09", "sessionId": "s1-infra", "category": "fact", "importance": 0.5, "text": "Build artifacts older than 90 days are purged from the artifact registry." },
+    { "id": "m10", "sessionId": "s1-infra", "category": "fact", "importance": 0.5, "text": "The on-call rotation switches every Monday at 09:00 local time." },
+
+    { "id": "m11", "sessionId": "s2-people", "category": "entity", "importance": 0.7, "text": "Priya Nair leads the Platform team and owns the authentication roadmap." },
+    { "id": "m12", "sessionId": "s2-people", "category": "decision", "importance": 0.7, "text": "The team decided to migrate from REST to gRPC for internal services in Q3." },
+    { "id": "m13", "sessionId": "s2-people", "category": "entity", "importance": 0.7, "text": "Marcus Webb is the security lead and signs off on all penetration test reports." },
+    { "id": "m14", "sessionId": "s2-people", "category": "fact", "importance": 0.6, "text": "The architecture review board meets on the first Wednesday of each month at 10:00." },
+    { "id": "m15", "sessionId": "s2-people", "category": "decision", "importance": 0.7, "text": "The team chose PostgreSQL over MySQL because of stronger JSONB support." },
+    { "id": "m16", "sessionId": "s2-people", "category": "entity", "importance": 0.7, "text": "Elena Fischer manages the data warehouse and approves schema changes." },
+    { "id": "m17", "sessionId": "s2-people", "category": "decision", "importance": 0.7, "text": "The company adopted a four-day release cadence after the Q2 incident review." },
+    { "id": "m18", "sessionId": "s2-people", "category": "fact", "importance": 0.5, "text": "New hires complete a two-week onboarding bootcamp before joining a team." },
+    { "id": "m19", "sessionId": "s2-people", "category": "entity", "importance": 0.6, "text": "The design system component library is maintained by the Frontend guild." },
+    { "id": "m20", "sessionId": "s2-people", "category": "decision", "importance": 0.6, "text": "The board approved a budget increase for GPU capacity in the next fiscal year." },
+
+    { "id": "m21", "sessionId": "s3-zh", "category": "fact", "importance": 0.6, "text": "鏡像倉庫每週日凌晨三點自動清理超過六十天的舊映像檔。" },
+    { "id": "m22", "sessionId": "s3-zh", "category": "entity", "importance": 0.6, "text": "客服機器人「小河」使用向量檢索回答常見問題,平均回應時間約八百毫秒。" },
+    { "id": "m23", "sessionId": "s3-zh", "category": "decision", "importance": 0.6, "text": "行銷團隊決定第四季把主力預算投放在短影音平台。" },
+    { "id": "m24", "sessionId": "s3-zh", "category": "fact", "importance": 0.6, "text": "資料外洩演練每季舉行一次,由資安組負責設計情境。" },
+    { "id": "m25", "sessionId": "s3-zh", "category": "constraint", "importance": 0.7, "text": "出貨流程規定生產環境變更必須經過兩位資深工程師核准。" },
+    { "id": "m26", "sessionId": "s3-zh", "category": "entity", "importance": 0.7, "text": "林雅婷負責資料倉儲,所有 schema 變更都要先經過她審核。" },
+    { "id": "m27", "sessionId": "s3-zh", "category": "decision", "importance": 0.7, "text": "公司在第二季事故檢討後改採四天一次的發版節奏。" },
+    { "id": "m28", "sessionId": "s3-zh", "category": "fact", "importance": 0.6, "text": "行動 App 的推播通知服務綁定 Firebase,每日尖峰約十萬則訊息。" },
+    { "id": "m29", "sessionId": "s3-zh", "category": "fact", "importance": 0.6, "text": "夜間記憶整併作業在每天凌晨兩點半啟動,處理當日新增的記憶。" },
+    { "id": "m30", "sessionId": "s3-zh", "category": "fact", "importance": 0.6, "text": "技術選型會議在每個月第一個週三上午十點召開。" },
+
+    { "id": "m31", "sessionId": "s4-tech", "category": "fact", "importance": 0.6, "text": "The internal package registry mirror is hosted at registry.nimbus.internal on port 4873." },
+    { "id": "m32", "sessionId": "s4-tech", "category": "fact", "importance": 0.7, "text": "Incident INC-2048 was caused by an expired TLS certificate on the billing service." },
+    { "id": "m33", "sessionId": "s4-tech", "category": "fact", "importance": 0.6, "text": "The vector index uses HNSW with ef_construction set to 200 and M set to 16." },
+    { "id": "m34", "sessionId": "s4-tech", "category": "knowledge", "importance": 0.6, "text": "Config key retrieval.candidatePoolMultiplier defaults to 2 in the retriever." },
+    { "id": "m35", "sessionId": "s4-tech", "category": "knowledge", "importance": 0.6, "text": "The embedding model Qwen3-Embedding-0.6B produces 1024-dimensional vectors." },
+    { "id": "m36", "sessionId": "s4-tech", "category": "fact", "importance": 0.6, "text": "Kafka topic order-events is partitioned into 12 partitions for parallelism." },
+    { "id": "m37", "sessionId": "s4-tech", "category": "fact", "importance": 0.6, "text": "The Grafana dashboard UID for the latency overview is lat-overview-01." },
+    { "id": "m38", "sessionId": "s4-tech", "category": "fact", "importance": 0.6, "text": "Secret rotation for the payments service is tracked under ticket SEC-731." },
+    { "id": "m39", "sessionId": "s4-tech", "category": "fact", "importance": 0.6, "text": "The canary deployment shifts 5 percent of traffic for the first 10 minutes." },
+    { "id": "m40", "sessionId": "s4-tech", "category": "constraint", "importance": 0.7, "text": "The audit log retention policy keeps records for seven years for compliance." }
+  ],
+  "queries": [
+    { "id": "q01", "kind": "paraphrase", "query": "How long are nightly database snapshots kept before they are deleted?", "relevantIds": ["m02"], "expectedAnswer": "30 days" },
+    { "id": "q02", "kind": "paraphrase", "query": "Who is responsible for signing off on changes to the data warehouse structure?", "relevantIds": ["m16"], "expectedAnswer": "Elena Fischer" },
+    { "id": "q03", "kind": "paraphrase", "query": "Which messaging protocol will internal services switch to later this year?", "relevantIds": ["m12"], "expectedAnswer": "gRPC" },
+    { "id": "q04", "kind": "paraphrase", "query": "Why did the engineers pick Postgres instead of another relational database?", "relevantIds": ["m15"], "expectedAnswer": "stronger JSONB support" },
+    { "id": "q05", "kind": "paraphrase", "query": "How frequently does the secure connection certificate for the service mesh renew itself?", "relevantIds": ["m05"], "expectedAnswer": "every 14 days" },
+
+    { "id": "q06", "kind": "lexical", "query": "What caused incident INC-2048?", "relevantIds": ["m32"], "expectedAnswer": "an expired TLS certificate on the billing service" },
+    { "id": "q07", "kind": "lexical", "query": "Which ticket tracks secret rotation for the payments service?", "relevantIds": ["m38"], "expectedAnswer": "SEC-731" },
+    { "id": "q08", "kind": "lexical", "query": "What port does registry.nimbus.internal listen on?", "relevantIds": ["m31"], "expectedAnswer": "4873" },
+    { "id": "q09", "kind": "lexical", "query": "What is the Grafana dashboard UID for the latency overview?", "relevantIds": ["m37"], "expectedAnswer": "lat-overview-01" },
+    { "id": "q10", "kind": "lexical", "query": "What value is ef_construction set to in the vector index?", "relevantIds": ["m33"], "expectedAnswer": "200" },
+
+    { "id": "q11", "kind": "cjk", "query": "鏡像倉庫多久會清理一次舊的映像檔?", "relevantIds": ["m21"], "expectedAnswer": "每週日凌晨三點,清理超過六十天的" },
+    { "id": "q12", "kind": "cjk", "query": "客服機器人叫什麼名字?", "relevantIds": ["m22"], "expectedAnswer": "小河" },
+    { "id": "q13", "kind": "cjk", "query": "誰負責審核資料倉儲的 schema 變更?", "relevantIds": ["m26"], "expectedAnswer": "林雅婷" },
+    { "id": "q14", "kind": "cjk", "query": "夜間記憶整併作業幾點開始?", "relevantIds": ["m29"], "expectedAnswer": "凌晨兩點半" },
+    { "id": "q15", "kind": "cjk", "query": "手機 App 的推播通知是用哪一個服務?", "relevantIds": ["m28"], "expectedAnswer": "Firebase" },
+
+    { "id": "q16", "kind": "cross-session", "query": "How many people must approve a change to the production environment?", "relevantIds": ["m07", "m25"], "expectedAnswer": "two senior engineers" },
+    { "id": "q17", "kind": "cross-session", "query": "Which release cadence did the company adopt after reviewing the Q2 incident?", "relevantIds": ["m17", "m27"], "expectedAnswer": "a four-day release cadence" },
+    { "id": "q18", "kind": "cross-session", "query": "When does the technology architecture review board convene?", "relevantIds": ["m14", "m30"], "expectedAnswer": "the first Wednesday of each month at 10:00" },
+
+    { "id": "q19", "kind": "lexical", "query": "How many requests per minute is each API key allowed?", "relevantIds": ["m04"], "expectedAnswer": "100 requests per minute" },
+    { "id": "q20", "kind": "lexical", "query": "How many dimensions do the embedding vectors have and which model produces them?", "relevantIds": ["m35"], "expectedAnswer": "1024 dimensions, produced by Qwen3-Embedding-0.6B" }
+  ]
+}

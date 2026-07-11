@@ -1,0 +1,35 @@
+{
+  "name": "@memory-river/core",
+  "version": "0.1.0",
+  "description": "Framework-neutral long-term memory engine for Node.js agents.",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/Hsi431/memory-river",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.mjs tests/*.test.ts"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.14.0",
+    "apache-arrow": "^18.1.0"
+  },
+  "optionalDependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "onnxruntime-node": "1.14.0",
+    "nodejieba": "^3.5.7"
+  }
+}

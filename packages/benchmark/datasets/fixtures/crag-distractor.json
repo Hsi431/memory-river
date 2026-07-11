@@ -1,0 +1,85 @@
+{
+  "version": "crag-distractor-v1",
+  "description": "Synthetic bilingual (EN/ZH) precision/recall fixture for the Memory River CRAG reranker. Pure fiction; no real persons or systems. Unlike the retrieval fixture, every query plants deliberate DISTRACTORS — memories that share entities, keywords, or domain with the query and therefore pass RRF similarity, but do NOT answer it (wrong attribute, superseded fact, topic-adjacent, or lexical homonym). A good CRAG filter must keep relevantIds and drop distractorIds. neutralFiller memories pad the corpus so the pool is not trivially small.",
+  "poolK": 10,
+  "memories": [
+    { "id": "m01", "sessionId": "s1-halcyon", "category": "fact", "importance": 0.6, "text": "The Halcyon API gateway listens on port 9000 for inbound client traffic." },
+    { "id": "m02", "sessionId": "s1-halcyon", "category": "fact", "importance": 0.5, "text": "The Halcyon metrics exporter is scraped on port 9100 by the monitoring stack." },
+    { "id": "m03", "sessionId": "s1-halcyon", "category": "fact", "importance": 0.5, "text": "The Halcyon API gateway rotates its TLS certificates automatically every 7 days." },
+    { "id": "m04", "sessionId": "s1-halcyon", "category": "fact", "importance": 0.5, "text": "Halcyon deployments are rolled out region by region during the Tuesday maintenance window." },
+
+    { "id": "m05", "sessionId": "s2-mira", "category": "event", "importance": 0.6, "text": "Mira moved to Kyoto in March and has been living there ever since." },
+    { "id": "m06", "sessionId": "s2-mira", "category": "event", "importance": 0.4, "text": "Before the move, Mira lived in Osaka for almost six years." },
+    { "id": "m07", "sessionId": "s2-mira", "category": "fact", "importance": 0.4, "text": "Mira's younger sister Sora lives in Sapporo and works as a vet." },
+    { "id": "m08", "sessionId": "s2-mira", "category": "preference", "importance": 0.4, "text": "Mira prefers tea over coffee and never drinks anything caffeinated after noon." },
+
+    { "id": "m09", "sessionId": "s3-codes", "category": "fact", "importance": 0.6, "text": "The warehouse door release code for the north entrance is 4471." },
+    { "id": "m10", "sessionId": "s3-codes", "category": "fact", "importance": 0.5, "text": "The fire-drill assembly point is in car park 4471, the lot behind block C." },
+    { "id": "m11", "sessionId": "s3-codes", "category": "fact", "importance": 0.5, "text": "The warehouse alarm panel PIN for the south entrance is 8820." },
+
+    { "id": "m12", "sessionId": "s4-ledger", "category": "fact", "importance": 0.6, "text": "客戶星辰科技的當月應收帳款餘額是新台幣 132,000 元。" },
+    { "id": "m13", "sessionId": "s4-ledger", "category": "fact", "importance": 0.5, "text": "客戶星辰科技上個月的應收帳款餘額是新台幣 98,000 元,已全數結清。" },
+    { "id": "m14", "sessionId": "s4-ledger", "category": "fact", "importance": 0.5, "text": "客戶銀河貿易的當月應收帳款餘額是新台幣 132,000 元。" },
+    { "id": "m15", "sessionId": "s4-ledger", "category": "fact", "importance": 0.4, "text": "星辰科技的聯絡窗口是林經理,分機 218。" },
+
+    { "id": "m16", "sessionId": "s5-recipe", "category": "fact", "importance": 0.5, "text": "The almond sponge cake bakes at 170°C for 25 minutes." },
+    { "id": "m17", "sessionId": "s5-recipe", "category": "fact", "importance": 0.4, "text": "The almond brittle is cooked at 150°C until the caramel turns deep amber." },
+    { "id": "m18", "sessionId": "s5-recipe", "category": "fact", "importance": 0.4, "text": "The sponge cake recipe was updated last week: it now bakes at 160°C for 30 minutes." },
+
+    { "id": "f01", "sessionId": "s6-filler", "category": "fact", "importance": 0.3, "text": "The office plants are watered every Monday and Thursday morning." },
+    { "id": "f02", "sessionId": "s6-filler", "category": "fact", "importance": 0.3, "text": "週五的團隊午餐固定在一樓的拉麵店。" },
+    { "id": "f03", "sessionId": "s6-filler", "category": "fact", "importance": 0.3, "text": "The quarterly all-hands is streamed from the Lisbon office." },
+    { "id": "f04", "sessionId": "s6-filler", "category": "fact", "importance": 0.3, "text": "The spare projector remote is kept in the second drawer of the AV cabinet." },
+    { "id": "f05", "sessionId": "s6-filler", "category": "fact", "importance": 0.3, "text": "登山社的裝備借用需提前三天在表單上登記。" }
+  ],
+  "queries": [
+    {
+      "id": "qa1",
+      "kind": "near-miss-attribute",
+      "query": "Which port does the Halcyon API gateway accept inbound client traffic on?",
+      "relevantIds": ["m01"],
+      "distractorIds": ["m02", "m03"],
+      "note": "m02 = same project, different service+port; m03 = same subject, wrong attribute (cert rotation)."
+    },
+    {
+      "id": "qa2",
+      "kind": "superseded",
+      "query": "Where does Mira live now?",
+      "relevantIds": ["m05"],
+      "distractorIds": ["m06", "m07"],
+      "note": "m06 = stale prior residence (contradicted by m05); m07 = adjacent person (sister)."
+    },
+    {
+      "id": "qa3",
+      "kind": "lexical-homonym",
+      "query": "What is the door release code for the warehouse north entrance?",
+      "relevantIds": ["m09"],
+      "distractorIds": ["m10", "m11"],
+      "note": "m10 = same digits 4471 but it is a car-park label, not a code; m11 = warehouse code but for the wrong entrance."
+    },
+    {
+      "id": "qa4",
+      "kind": "cjk-superseded",
+      "query": "星辰科技這個月的應收帳款是多少?",
+      "relevantIds": ["m12"],
+      "distractorIds": ["m13", "m14"],
+      "note": "m13 = 同客戶但上個月(已結清,過時);m14 = 相同金額但不同客戶。"
+    },
+    {
+      "id": "qa5",
+      "kind": "topic-adjacent",
+      "query": "What temperature and time should I use to bake the almond sponge cake?",
+      "relevantIds": ["m18"],
+      "distractorIds": ["m16", "m17"],
+      "note": "m16 = the OLD sponge-cake setting, superseded by m18; m17 = same domain, different dish (brittle)."
+    },
+    {
+      "id": "qa6",
+      "kind": "cjk-adjacent",
+      "query": "星辰科技的聯絡窗口是誰?",
+      "relevantIds": ["m15"],
+      "distractorIds": ["m12", "m14"],
+      "note": "m12/m14 = 同領域帳款數字,含星辰/相同金額關鍵字但答的是金額不是窗口。"
+    }
+  ]
+}

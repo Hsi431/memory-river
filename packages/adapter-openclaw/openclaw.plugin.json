@@ -1,0 +1,189 @@
+{
+  "id": "memory-river",
+  "name": "Memory River",
+  "version": "1.0.0",
+  "kind": "memory",
+  "main": "dist/index.js",
+  "description": "統一記憶介面：短期對話膠囊濃縮 + LanceDB v4 長期混合檢索。協調 ConcentratorAdapter、MemoryStore、Router 三大核心。",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "embedding": {
+        "type": "object",
+        "description": "Embedding provider configuration",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["gemini", "openai", "ollama"]
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "dimensions": {
+            "type": "number",
+            "default": 3072
+          }
+        },
+        "required": ["provider", "model"]
+      },
+      "dbPath": {
+        "type": "string",
+        "description": "SSD 持久化路徑",
+        "default": "~/.openclaw/memory/lancedb-v4"
+      },
+      "ramDbPath": {
+        "type": "string",
+        "description": "RAM Disk 路徑（預設: /dev/shm/memory-river/lancedb-v4）",
+        "default": "/dev/shm/memory-river/lancedb-v4"
+      },
+      "inboxPath": {
+        "type": "string",
+        "default": "~/.openclaw/memory/inbox"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": false
+      },
+      "retrieval": {
+        "type": "object",
+        "properties": {
+          "vectorWeight": {
+            "type": "number",
+            "default": 0.7
+          },
+          "bm25Weight": {
+            "type": "number",
+            "default": 0.3
+          },
+          "candidatePoolMultiplier": {
+            "type": "number",
+            "default": 10
+          }
+        }
+      },
+      "concentration": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["gemini", "deepseek"],
+            "default": "gemini"
+          },
+          "model": {
+            "type": "string",
+            "default": "gemini-2.5-flash-lite"
+          },
+          "maxTokens": {
+            "type": "number",
+            "default": 8192
+          },
+          "deepseekApiKey": {
+            "type": "string"
+          },
+          "deepseekModel": {
+            "type": "string",
+            "default": "deepseek-v4-flash"
+          },
+          "threshold": {
+            "type": "number",
+            "default": 50
+          },
+          "targetTokens": {
+            "type": "number",
+            "default": 500
+          },
+          "capsuleCategory": {
+            "type": "string",
+            "default": "history"
+          },
+          "enableDryRun": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "cleanup": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "decayDays": {
+            "type": "number",
+            "default": 30
+          },
+          "deleteBelow": {
+            "type": "number",
+            "default": 0.1
+          },
+          "trashPath": {
+            "type": "string",
+            "default": "~/.openclaw/memory/.trash"
+          },
+          "trashRetentionDays": {
+            "type": "number",
+            "default": 7
+          },
+          "enableTrashAutoPurge": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "causalEngine": {
+        "type": "object",
+        "properties": {
+          "updateThreshold": {
+            "type": "number",
+            "default": 0.15
+          },
+          "causalThreshold": {
+            "type": "number",
+            "default": 0.45
+          },
+          "embeddingModel": {
+            "type": "string",
+            "default": "gemini-embedding-exp-0325"
+          }
+        }
+      },
+      "health": {
+        "type": "object",
+        "properties": {
+          "initialScore": {
+            "type": "number",
+            "default": 100
+          },
+          "coreCategories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": ["identity", "preference", "constraint", "business"]
+          },
+          "coreImportanceThreshold": {
+            "type": "number",
+            "default": 0.8
+          },
+          "decayIntervalMs": {
+            "type": "number",
+            "default": 86400000
+          },
+          "decayPerRun": {
+            "type": "number",
+            "default": 5
+          },
+          "deleteThreshold": {
+            "type": "number",
+            "default": 0
+          }
+        }
+      }
+    },
+    "required": ["embedding"]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "memory-river",
+  "version": "0.2.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/adapter-openclaw",
+    "packages/adapter-mcp",
+    "packages/service",
+    "packages/claude-code-plugin",
+    "packages/example-cli",
+    "packages/dashboard",
+    "packages/benchmark"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "clean": "npm run clean -ws",
+    "test": "npm test -ws",
+    "dump:skill-capsules": "node scripts/dump-skill-capsules.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.37",
+    "typescript": "^5.9.3"
+  }
+}
