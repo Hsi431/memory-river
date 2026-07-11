@@ -144,21 +144,23 @@ flowchart TD
 
 ```bash
 ollama pull hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF
-npm ci && npm run build
 ```
 
 ### Path A — plug it into Claude Code (shortest way to feel it)
 
 ```bash
+# 0) install the service — provides the `mr` and `mr-serve` commands
+npm install -g @memory-river/service
+
 # 1) configure — a 3-question wizard (or --yes for all defaults), then verify the environment
-npx mr init
-npx mr doctor
+mr init
+mr doctor
 
 # 2) start the daemon and keep it running
-npx mr-serve
+mr-serve
 
 # 3) wire it into Claude Code
-claude plugin marketplace add /path/to/memory-river
+claude plugin marketplace add Hsi431/memory-river
 claude plugin install memory-river@memory-river
 ```
 
@@ -168,7 +170,11 @@ From then on every prompt you type gets relevant long-term memories injected as 
 
 ### Path B — standalone, no host at all
 
+The demo CLI lives in the repo (it is not published to npm):
+
 ```bash
+git clone https://github.com/Hsi431/memory-river && cd memory-river
+npm ci && npm run build
 ollama pull qwen3:8b   # a small local chat model for the demo
 
 npx mr-demo remember "The deployment window is Friday at 18:00."

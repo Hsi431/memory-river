@@ -144,21 +144,23 @@ flowchart TD
 
 ```bash
 ollama pull hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF
-npm ci && npm run build
 ```
 
 ### 路徑 A — 接進 Claude Code(最快有感)
 
 ```bash
+# 0) 裝服務套件 —— 提供 `mr` 和 `mr-serve` 指令
+npm install -g @memory-river/service
+
 # 1) 設定 —— 三題精靈(--yes 全用預設),然後檢查環境
-npx mr init
-npx mr doctor
+mr init
+mr doctor
 
 # 2) 起 daemon,讓它一直跑著
-npx mr-serve
+mr-serve
 
 # 3) 接進 Claude Code
-claude plugin marketplace add /path/to/memory-river
+claude plugin marketplace add Hsi431/memory-river
 claude plugin install memory-river@memory-river
 ```
 
@@ -168,7 +170,11 @@ claude plugin install memory-river@memory-river
 
 ### 路徑 B — 完全獨立,不接任何宿主
 
+demo CLI 在 repo 裡(沒有發上 npm):
+
 ```bash
+git clone https://github.com/Hsi431/memory-river && cd memory-river
+npm ci && npm run build
 ollama pull qwen3:8b   # demo 用的本地小聊天模型
 
 npx mr-demo remember "老闆喜歡手沖咖啡"
