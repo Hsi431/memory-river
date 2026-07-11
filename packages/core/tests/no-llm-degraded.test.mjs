@@ -8,6 +8,14 @@ import { createMemoryRiver } from '../dist/index.js';
 import { ConcentratorAdapter } from '../dist/distill/concentrator-adapter.js';
 import { createTranscriptArchive } from '../dist/transcript/transcript-archive.js';
 
+async function bestEffortRm(target, options) {
+  try {
+    await rm(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 class MockEmbedder {
   getDimensions() { return 8; }
   async embed(text) {
@@ -38,7 +46,7 @@ test('zero LLM keys keep transcript archiving, store, and recall available', asy
     assert.match(transcript, /archive this raw transcript/);
   } finally {
     await river.stop().catch(() => {});
-    await rm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await bestEffortRm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -56,6 +64,6 @@ test('zero LLM keys skip concentration without attempting a provider call', asyn
     assert.equal(result.wasConcentrated, false);
     assert.equal(result.messages[0].content, 'keep this raw');
   } finally {
-    await rm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await bestEffortRm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

@@ -24,7 +24,13 @@ async function freshModule() {
   return {
     mod,
     hooks,
-    cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
+    cleanup: () => {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(`[test-teardown] best-effort rm failed for ${tmp}:`, error?.code ?? error);
+      }
+    },
   };
 }
 

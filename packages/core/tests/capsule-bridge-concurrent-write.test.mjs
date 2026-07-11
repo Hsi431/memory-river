@@ -36,6 +36,10 @@ test('writeToInbox: concurrent same-tick writes never collide or overwrite each 
       assert.match(path.basename(p), /^river_capsule_\d+_[0-9a-f]+\.txt$/);
     }
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

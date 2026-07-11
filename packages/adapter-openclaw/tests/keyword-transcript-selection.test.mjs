@@ -6,6 +6,14 @@ import path from 'node:path';
 
 import { selectTranscriptFilesForKeywordSearch } from '../dist/index.js';
 
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 function writeTranscript(dir, name, mtimeMs) {
   const filePath = path.join(dir, name);
   fs.writeFileSync(filePath, '{"entryId":1,"user":"u","assistant":"a","timestamp":1}\n', 'utf-8');
@@ -23,7 +31,7 @@ test('keyword transcript selection sorts by mtime desc', () => {
     const files = selectTranscriptFilesForKeywordSearch(dir, 10).map((x) => x.file);
     assert.deepEqual(files, ['new.jsonl', 'mid.jsonl', 'old.jsonl']);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    bestEffortRmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -32,7 +40,7 @@ test('keyword transcript selection returns empty for empty directory', () => {
   try {
     assert.deepEqual(selectTranscriptFilesForKeywordSearch(dir, 10), []);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    bestEffortRmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -48,7 +56,7 @@ test('keyword transcript selection caps at latest ten files', () => {
     assert.equal(files[0], 'f11.jsonl');
     assert.equal(files.at(-1), 'f2.jsonl');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    bestEffortRmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -64,6 +72,6 @@ test('keyword transcript selection includes latest base transcript file', () => 
     assert.equal(files.includes('agent:xiaxia:discord:direct:409637104998416384.jsonl'), true);
     assert.equal(files.includes('agent:xiaxia:discord:direct:409637104998416384.jsonl.idx'), false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    bestEffortRmSync(dir, { recursive: true, force: true });
   }
 });

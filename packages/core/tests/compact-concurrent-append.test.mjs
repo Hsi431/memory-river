@@ -29,7 +29,13 @@ test('compact preserves a line appended while concentration is in progress', asy
     geminiApiKey: '',
     deepseekApiKey: '',
   });
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
+  });
 
   engine.activePluginConfig = { concentration: { asyncCompactRaceGuard: false } };
   engine.activeConcentrator = {
@@ -77,7 +83,13 @@ test('compact preserves a line appended after reading messages but before concen
     geminiApiKey: '',
     deepseekApiKey: '',
   });
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => {
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
+  });
 
   engine.activePluginConfig = { concentration: { asyncCompactRaceGuard: false } };
   engine.activeConcentrator = {

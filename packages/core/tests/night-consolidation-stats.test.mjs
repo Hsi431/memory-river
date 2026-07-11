@@ -41,7 +41,11 @@ async function withTempStore(prefix, fn) {
     else process.env.HOME = oldHome;
     if (oldTranscriptPath === undefined) delete process.env.MEMORY_TRANSCRIPT_PATH;
     else process.env.MEMORY_TRANSCRIPT_PATH = oldTranscriptPath;
-    fs.rmSync(paths.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(paths.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${paths.root}:`, error?.code ?? error);
+    }
   }
 }
 

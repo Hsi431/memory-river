@@ -55,6 +55,10 @@ test('memory_rehydrate marks validation and unknown-mode errors without marking 
     else process.env.HOME = oldHome;
     if (oldTranscriptPath === undefined) delete process.env.MEMORY_TRANSCRIPT_PATH;
     else process.env.MEMORY_TRANSCRIPT_PATH = oldTranscriptPath;
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

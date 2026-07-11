@@ -7,6 +7,14 @@ import test from 'node:test';
 import { handleArchiveSession } from '../lib/archive.mjs';
 import { transcriptJsonlToMessages } from '../lib/transcript.mjs';
 
+async function bestEffortRm(target, options) {
+  try {
+    await rm(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 function line(value) {
   return `${JSON.stringify(value)}\n`;
 }
@@ -109,7 +117,7 @@ test('archive posts parsed messages to /archive-transcript', async () => {
       ],
     });
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    await bestEffortRm(tmpDir, { recursive: true, force: true });
   }
 });
 
@@ -132,6 +140,6 @@ test('empty transcript does not call archive API', async () => {
 
     assert.equal(calls, 0);
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    await bestEffortRm(tmpDir, { recursive: true, force: true });
   }
 });

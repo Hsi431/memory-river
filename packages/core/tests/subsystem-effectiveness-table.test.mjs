@@ -33,7 +33,11 @@ async function withTempStore(prefix, fn) {
     await store.shutdown?.().catch?.(() => {});
     if (oldHome === undefined) delete process.env.HOME;
     else process.env.HOME = oldHome;
-    fs.rmSync(paths.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(paths.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${paths.root}:`, error?.code ?? error);
+    }
   }
 }
 

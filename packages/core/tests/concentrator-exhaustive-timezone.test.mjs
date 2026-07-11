@@ -67,7 +67,11 @@ async function withAdapter(options, fn) {
     await fn(adapter, captured);
   } finally {
     transcriptArchive.clearTranscriptCache();
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 }
 

@@ -61,7 +61,12 @@ before(async () => {
 });
 
 after(async () => {
-  if (rootPath) await rm(rootPath, { recursive: true, force: true });
+  if (!rootPath) return;
+  try {
+    await rm(rootPath, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${rootPath}:`, error?.code ?? error);
+  }
 });
 
 test('export writes active memories with metadata in deterministic order', async () => {

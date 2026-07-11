@@ -27,6 +27,10 @@ export async function withTempMemoriesTable(lancedb, fn, seedRows = [baseMemoryR
     const table = await db.createTable("memories", seedRows);
     return await fn({ dbPath, db, table });
   } finally {
-    fs.rmSync(dbPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(dbPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${dbPath}:`, error?.code ?? error);
+    }
   }
 }

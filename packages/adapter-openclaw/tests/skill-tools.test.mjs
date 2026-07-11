@@ -54,7 +54,13 @@ async function setup() {
   return {
     hooks,
     tools,
-    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+    cleanup: () => {
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+      }
+    },
   };
 }
 

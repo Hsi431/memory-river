@@ -193,7 +193,11 @@ test('missing cross-encoder model warns and passes candidates through', async ()
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /cross-encoder gate unavailable/);
   } finally {
-    fs.rmSync(missingModelDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(missingModelDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${missingModelDir}:`, error?.code ?? error);
+    }
   }
 });
 

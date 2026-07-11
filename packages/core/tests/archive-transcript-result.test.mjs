@@ -47,6 +47,10 @@ test('archiveTranscript returns the real ArchiveSnapshotResult instead of silent
     assert.equal(failed.appendedEntries, 0);
   } finally {
     await river.stop();
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

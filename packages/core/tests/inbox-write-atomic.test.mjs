@@ -22,6 +22,10 @@ test('writeInbox renames a completed temporary file into the inbox', async () =>
     assert.deepEqual(JSON.parse(fs.readFileSync(renameArgs[1], 'utf8')), { text: 'atomic', category: 'fact' });
   } finally {
     fs.promises.rename = originalRename;
-    fs.rmSync(inbox, { recursive: true, force: true });
+    try {
+      fs.rmSync(inbox, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${inbox}:`, error?.code ?? error);
+    }
   }
 });

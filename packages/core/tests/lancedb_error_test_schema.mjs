@@ -41,7 +41,11 @@ async function test() {
     console.log("slotKey: empty string error:", e.message);
   }
   } finally {
-    fs.rmSync(dbPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(dbPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${dbPath}:`, error?.code ?? error);
+    }
   }
 }
 

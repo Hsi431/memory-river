@@ -35,7 +35,11 @@ test('mr init --yes writes the current configuration without prompts', async () 
     assert.deepEqual(readOnboardingConfig(configPath), current);
     assert.match(await readFile(configPath, 'utf8'), /"storageMode": "ssd"/);
   } finally {
-    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    try {
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${dir}:`, error?.code ?? error);
+    }
   }
 });
 

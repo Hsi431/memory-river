@@ -131,6 +131,10 @@ test('entry-id rehydrate reads only files whose sidecar contains the id', async 
     const rehydrate = createIdxRehydrator(dir, ['locomo-0-s1', 'locomo-0-s2']);
     assert.deepEqual(await rehydrate([42, 99], 8), [indexedEntry]);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${dir}:`, error?.code ?? error);
+    }
   }
 });

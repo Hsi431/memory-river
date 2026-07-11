@@ -51,7 +51,11 @@ async function test() {
     } catch (e) {
         console.log("Failed with:", e);
     } finally {
-        fs.rmSync(root, { recursive: true, force: true });
+        try {
+            fs.rmSync(root, { recursive: true, force: true });
+        } catch (error) {
+            console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+        }
     }
 }
 

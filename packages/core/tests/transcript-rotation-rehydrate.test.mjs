@@ -20,7 +20,13 @@ test('rehydrates IDs and time ranges across a real transcript rotation', async (
   const identity = { canonicalKey: 'rotation-session', sessionKey: 'rotation-session', sessionId: 'rotation-session' };
   const firstTimestamp = 1_710_000_000_000;
   const largeText = 'x'.repeat(5_300_000);
-  t.after(() => fs.rmSync(transcriptsDir, { recursive: true, force: true }));
+  t.after(() => {
+    try {
+      fs.rmSync(transcriptsDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${transcriptsDir}:`, error?.code ?? error);
+    }
+  });
 
   archive.archiveSnapshot(identity, messages('old user', 'old assistant', firstTimestamp));
   archive.archiveSnapshot(identity, messages('filler user', largeText, firstTimestamp + 1_000));
@@ -46,7 +52,13 @@ test('reads surviving rotations when the primary file is absent and skips an unr
   const transcriptPath = archive.getTranscriptPath(identity.sessionKey);
   const rotatedPath = transcriptPath.replace(/\.jsonl$/, '.1.jsonl');
   const entry = { entryId: 7, user: 'surviving user', assistant: 'surviving assistant', timestamp: 1_710_000_000_000 };
-  t.after(() => fs.rmSync(transcriptsDir, { recursive: true, force: true }));
+  t.after(() => {
+    try {
+      fs.rmSync(transcriptsDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${transcriptsDir}:`, error?.code ?? error);
+    }
+  });
 
   fs.writeFileSync(rotatedPath, `${JSON.stringify(entry)}\n`);
   fs.writeFileSync(`${rotatedPath}.idx`, JSON.stringify({ 7: 0 }));
@@ -71,7 +83,13 @@ test('limits cache after merging rotated transcript files from disk', (t) => {
     assistant: 'answer',
     timestamp: timestamp + index,
   }));
-  t.after(() => fs.rmSync(transcriptsDir, { recursive: true, force: true }));
+  t.after(() => {
+    try {
+      fs.rmSync(transcriptsDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${transcriptsDir}:`, error?.code ?? error);
+    }
+  });
 
   fs.writeFileSync(rotatedPath, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
   assert.equal(archive.getRawTranscript(identity).length, 5);

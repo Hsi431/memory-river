@@ -14,6 +14,14 @@ import {
   TOOL_NAMES,
 } from '../dist/index.js';
 
+async function bestEffortRm(target, options) {
+  try {
+    await rm(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 class MockEmbedder {
   getDimensions() {
     return 1024;
@@ -96,7 +104,7 @@ test('lists thirteen tools, reports adapter info, and stores then recalls throug
     await client.close().catch(() => {});
     await server.close().catch(() => {});
     await river.stop().catch(() => {});
-    await rm(dataDir, { recursive: true, force: true });
+    await bestEffortRm(dataDir, { recursive: true, force: true });
   }
 });
 
@@ -154,7 +162,7 @@ test('memory_update changes recalled memory content through MCP', async () => {
     await client.close().catch(() => {});
     await server.close().catch(() => {});
     await river.stop().catch(() => {});
-    await rm(dataDir, { recursive: true, force: true });
+    await bestEffortRm(dataDir, { recursive: true, force: true });
   }
 });
 
@@ -208,7 +216,7 @@ test("memory_set_status='trashed' removes the memory from recall through MCP", a
     await client.close().catch(() => {});
     await server.close().catch(() => {});
     await river.stop().catch(() => {});
-    await rm(dataDir, { recursive: true, force: true });
+    await bestEffortRm(dataDir, { recursive: true, force: true });
   }
 });
 
@@ -271,6 +279,6 @@ test('archives then rehydrates exact conversation content through MCP', async ()
   } finally {
     await client.close().catch(() => {});
     await server.close().catch(() => {});
-    await rm(dataDir, { recursive: true, force: true });
+    await bestEffortRm(dataDir, { recursive: true, force: true });
   }
 });

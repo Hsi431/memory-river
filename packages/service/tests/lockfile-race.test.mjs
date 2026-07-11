@@ -28,7 +28,11 @@ test('exactly one process acquires a stale service lock', async (t) => {
     const running = children.filter((child) => child.exitCode === null && child.connected);
     for (const child of running) child.send('release');
     await Promise.all(running.map((child) => new Promise((resolve) => child.once('exit', resolve))));
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${dataDir}:`, error?.code ?? error);
+    }
   });
 
   for (let index = 0; index < 12; index++) {

@@ -44,7 +44,11 @@ test.beforeEach(() => {
 test.afterEach(() => {
   const dir = process.env.MEMORY_TRANSCRIPT_PATH;
   if (dir && fs.existsSync(dir)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${dir}:`, error?.code ?? error);
+    }
   }
   delete process.env.MEMORY_TRANSCRIPT_PATH;
   clearTranscriptCache();

@@ -60,6 +60,10 @@ test('night consolidation skips invalid LLM decisions while executing valid ones
     assert.equal(warnings.filter((warning) => warning.includes('invalid LLM decision')).length, 4);
   } finally {
     console.warn = originalWarn;
-    fs.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    try {
+      fs.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${path.dirname(logPath)}:`, error?.code ?? error);
+    }
   }
 });

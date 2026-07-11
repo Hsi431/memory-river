@@ -39,6 +39,10 @@ test('empty embedding dead-letters the inbox item instead of deleting it', async
     assert.equal(fs.existsSync(path.join(inbox, 'error', 'pending-empty.json')), true);
   } finally {
     globalThis.setTimeout = originalSetTimeout;
-    fs.rmSync(inbox, { recursive: true, force: true });
+    try {
+      fs.rmSync(inbox, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${inbox}:`, error?.code ?? error);
+    }
   }
 });

@@ -21,6 +21,10 @@ test('static session-file fallback rejects traversal session IDs', () => {
   } finally {
     if (originalStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
     else process.env.OPENCLAW_STATE_DIR = originalStateDir;
-    fs.rmSync(stateDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${stateDir}:`, error?.code ?? error);
+    }
   }
 });

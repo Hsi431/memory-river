@@ -59,6 +59,10 @@ test('createMemoryRiver exposes the public API and round-trips one memory', asyn
     assert.ok(results.some(result => result.entry.text === 'T8b API round trip memory'));
   } finally {
     await river.stop();
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

@@ -101,6 +101,10 @@ test('core keyword rehydrate route returns the partial match instead of empty', 
     });
     assert.deepEqual(results.map(entry => entry.entryId), [1]);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

@@ -16,6 +16,14 @@ import {
 import { InboxWatcher } from '@memory-river/core/pipeline/inbox-watcher';
 import { __asyncCompactTestHooks } from '../dist/index.js';
 
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -84,7 +92,7 @@ test('writeCompactRequest and readCompactRequest round-trip', async () => {
     const readBack = await readCompactRequest(filePath);
     assert.deepEqual(readBack, item);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -100,7 +108,7 @@ test('writeCompactRequest leaves only final json filename after atomic rename', 
     assert.equal(files.some(file => file.endsWith('.tmp')), false);
     assert.deepEqual(files, [path.basename(filePath)]);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -138,7 +146,7 @@ test('InboxWatcher consumes compact_request json and deletes it on success', asy
     assert.equal(fs.existsSync(filePath), false);
     assert.equal(fs.existsSync(filePath + '.processing'), false);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -164,7 +172,7 @@ test('enqueueAsyncCompact blocks duplicate trackingKey before writing second fil
     assert.equal(fs.readdirSync(root).filter(file => isCompactRequestFilename(file)).length, 1);
   } finally {
     __asyncCompactTestHooks.reset();
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -187,7 +195,7 @@ test('enqueueAsyncCompact releases queued key when inbox write fails', async () 
     assert.equal(released, true);
   } finally {
     __asyncCompactTestHooks.reset();
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -215,7 +223,7 @@ test('compact request processor normal no-op return is treated as success', asyn
     assert.equal(fs.existsSync(filePath), false);
     assert.equal(fs.existsSync(path.join(root, 'error', path.basename(filePath))), false);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -251,7 +259,7 @@ test('compact request retry exhausts and moves request to inbox error dead-lette
     assert.equal(fs.existsSync(errorPath), true);
     assert.deepEqual(await readCompactRequest(errorPath), item);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -286,7 +294,7 @@ test('orphan compact request processing file older than five minutes is restored
     assert.deepEqual(await readCompactRequest(filePath), item);
     assert.equal(calls.length, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -323,6 +331,6 @@ test('restart start trigger consumes pending compact request json files', async 
     assert.equal(fs.existsSync(firstPath + '.processing'), false);
     assert.equal(fs.existsSync(secondPath + '.processing'), false);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    bestEffortRmSync(root, { recursive: true, force: true });
   }
 });

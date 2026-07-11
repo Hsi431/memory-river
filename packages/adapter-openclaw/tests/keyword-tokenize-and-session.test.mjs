@@ -12,6 +12,14 @@ import {
   selectTranscriptFilesForSessionKeywordSearch,
 } from '../dist/index.js';
 
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 function writeTranscript(dir, name, rows, mtimeMs) {
   const filePath = path.join(dir, name);
   fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf-8');
@@ -86,7 +94,7 @@ test('sessionKey: specified session scans only base plus rotate files', () => {
     );
     assert.deepEqual(xiaxiaHits.map((x) => x.entryId), [3]);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    bestEffortRmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -107,6 +115,6 @@ test('sessionKey: unspecified scan keeps latest ten files behavior', () => {
     assert.equal(hits.length, 10);
     assert.equal(hits.some((x) => x.entryId === 1), false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    bestEffortRmSync(dir, { recursive: true, force: true });
   }
 });

@@ -19,6 +19,14 @@ function countManifests(storePath, tableName) {
   return fs.readdirSync(versionsPath).filter((name) => name.endsWith('.manifest')).length;
 }
 
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 test('500 auxiliary writes compact manifests without deleting rows', async () => {
   const storePath = fs.mkdtempSync(path.join(os.tmpdir(), 'aux-maintenance-writes-'));
   try {
@@ -55,7 +63,7 @@ test('500 auxiliary writes compact manifests without deleting rows', async () =>
     assert.ok(manifestsBefore >= AUX_TABLE_WRITE_MAINTENANCE_INTERVAL);
     assert.ok(manifestsAfter < 50);
   } finally {
-    fs.rmSync(storePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(storePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -125,6 +133,6 @@ test('one-time auxiliary maintenance script is idempotent', async () => {
     assert.deepEqual(first, ['subsystem_effectiveness']);
     assert.deepEqual(second, ['subsystem_effectiveness']);
   } finally {
-    fs.rmSync(storePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(storePath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

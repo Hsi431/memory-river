@@ -29,7 +29,13 @@ test('SIGKILL during an insert recovers matching RAM and SSD rows', async (t) =>
     execArgv: [],
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  t.after(() => {
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
+  });
 
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('child never reached WAL-synced checkpoint')), 10_000);

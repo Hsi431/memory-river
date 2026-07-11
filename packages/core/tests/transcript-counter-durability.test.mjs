@@ -33,6 +33,10 @@ test('archive does not append when persisting the entry counter fails', () => {
   } finally {
     fs.writeFileSync = originalWriteFileSync;
     syncBuiltinESMExports();
-    fs.rmSync(transcriptsDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(transcriptsDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${transcriptsDir}:`, error?.code ?? error);
+    }
   }
 });

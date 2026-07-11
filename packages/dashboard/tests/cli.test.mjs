@@ -68,7 +68,12 @@ before(async () => {
 });
 
 after(async () => {
-  if (dbPath) await rm(dbPath, { recursive: true, force: true });
+  if (!dbPath) return;
+  try {
+    await rm(dbPath, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${dbPath}:`, error?.code ?? error);
+  }
 });
 
 async function capture(args) {

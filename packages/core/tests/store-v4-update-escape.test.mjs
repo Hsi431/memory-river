@@ -43,5 +43,9 @@ test('normalizeLanceUpdateValues lets LanceDB update string fields containing JS
   assert.equal(rows[0].text, text);
   assert.equal(Number(rows[0].updatedAt), updatedAt);
 
-  fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${tempDir}:`, error?.code ?? error);
+  }
 });

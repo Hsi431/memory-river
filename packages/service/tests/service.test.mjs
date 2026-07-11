@@ -15,6 +15,14 @@ import {
   serviceLockPath,
 } from '../dist/index.js';
 
+async function bestEffortRm(target, options) {
+  try {
+    await rm(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 class MockEmbedder {
   getDimensions() {
     return 1024;
@@ -57,7 +65,7 @@ async function withTestService(fn) {
     return await fn({ dataDir, server });
   } finally {
     await river.stop().catch(() => {});
-    await rm(dataDir, {
+    await bestEffortRm(dataDir, {
       recursive: true,
       force: true,
       maxRetries: 10,
@@ -171,7 +179,7 @@ test('lockfile rejects a second live instance', async () => {
     );
   } finally {
     await lock.release().catch(() => {});
-    await rm(dataDir, {
+    await bestEffortRm(dataDir, {
       recursive: true,
       force: true,
       maxRetries: 10,
@@ -224,7 +232,7 @@ test('SIGTERM stops the daemon and removes the lockfile', async () => {
     await waitFor(() => !existsSync(serviceLock), 'lockfile removal');
   } finally {
     if (!running.killed) running.kill('SIGKILL');
-    await rm(dataDir, {
+    await bestEffortRm(dataDir, {
       recursive: true,
       force: true,
       maxRetries: 10,

@@ -12,7 +12,13 @@ function makePaths() {
     root,
     ssd: path.join(root, 'ssd'),
     ram: path.join(root, 'ram'),
-    cleanup: () => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+    cleanup: () => {
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch (error) {
+        console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+      }
+    },
   };
 }
 

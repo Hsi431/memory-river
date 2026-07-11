@@ -38,6 +38,10 @@ test('UPDATE keeps the old memory active when writing its replacement fails', as
     assert.deepEqual(statusChanges, []);
     assert.equal(JSON.parse(oldMemory.metadata).status, 'active');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

@@ -30,6 +30,14 @@ function makeSummary(sessionId) {
   };
 }
 
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 function listFilesRecursive(dir) {
   if (!fs.existsSync(dir)) return [];
   const out = [];
@@ -63,7 +71,7 @@ test('writeSessionSummary rejects path-traversal / separator sessionIds and neve
     const files = listFilesRecursive(summaryDir);
     assert.equal(files.length, 0, `expected no files written for malicious sessionIds, got: ${files.join(', ')}`);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -80,6 +88,6 @@ test('writeSessionSummary still writes normal sessionIds (including ":" and ".")
     const parsed = JSON.parse(fs.readFileSync(expectedPath, 'utf-8'));
     assert.equal(parsed.capsule, 'capsule text');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

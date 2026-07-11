@@ -148,6 +148,10 @@ test('LoCoMo archive entry_ids rehydrate returns the original dated turns', asyn
     assert.match(turnText(turns), /^\[T1\]\n\[2023-05-08\] user: Caroline:/);
   } finally {
     await river.stop();
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

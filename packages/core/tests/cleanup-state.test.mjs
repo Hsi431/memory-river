@@ -66,6 +66,10 @@ test('cleanup-state read/write round trip uses requested file path', () => {
       lastDecayCount: 5,
     });
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
   }
 });

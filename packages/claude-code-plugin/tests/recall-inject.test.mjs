@@ -6,6 +6,14 @@ import test from 'node:test';
 
 import { handleRecallInject } from '../lib/recall.mjs';
 
+async function bestEffortRm(target, options) {
+  try {
+    await rm(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 function responseJson(body, ok = true, status = 200) {
   return {
     ok,
@@ -41,7 +49,7 @@ test('normal recall injects additionalContext with the service block', async () 
     assert.match(output.hookSpecificOutput.additionalContext, /memory-river recall/);
     assert.match(output.hookSpecificOutput.additionalContext, /stored context/);
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    await bestEffortRm(tmpDir, { recursive: true, force: true });
   }
 });
 
@@ -101,6 +109,6 @@ test('dedupe prevents injecting the same entry twice in one session', async () =
     assert.equal(second, null);
     assert.equal(calls, 2);
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    await bestEffortRm(tmpDir, { recursive: true, force: true });
   }
 });

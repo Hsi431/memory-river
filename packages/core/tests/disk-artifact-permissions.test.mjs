@@ -12,6 +12,14 @@ function modeOf(p) {
   return fs.statSync(p).mode & 0o777;
 }
 
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
+
 let originalUmask;
 test.before(() => {
   // 確保測試在已知基線下跑，不受呼叫者 shell 的 umask 影響（F4 驗收條件要求）
@@ -45,7 +53,7 @@ test('transcript-archive: newly created dir and files are 0700/0600 (F4)', () =>
     assert.ok(fs.existsSync(counterPath));
     assert.equal(modeOf(counterPath), 0o600, 'transcript.counter should be 0600');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -62,7 +70,7 @@ test('capsule-bridge: newly created inbox dir and files are 0700/0600 (F4)', asy
     const itemPath = await bridge.writeInboxItem('hello item', { category: 'fact' });
     assert.equal(modeOf(itemPath), 0o600, 'pending_*.json should be 0600');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -89,6 +97,6 @@ test('concentrator-adapter: session-summary dir and file are 0700/0600 (F4)', as
     assert.ok(fs.existsSync(summaryPath));
     assert.equal(modeOf(summaryPath), 0o600, 'session summary file should be 0600');
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

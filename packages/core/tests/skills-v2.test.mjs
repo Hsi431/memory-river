@@ -8,6 +8,14 @@ import { createMemoryRiver } from '../dist/api.js';
 import { MemoryRiverEngine } from '../dist/engine.js';
 import { StatusManager } from '../dist/store/status-manager.js';
 import { MemoryStore } from '../dist/store/store-v4.js';
+
+function bestEffortRmSync(target, options) {
+  try {
+    fs.rmSync(target, options);
+  } catch (error) {
+    console.warn(`[test-teardown] best-effort rm failed for ${target}:`, error?.code ?? error);
+  }
+}
 import { SkillValidationError, validateSkillDef } from '../dist/skills/validate.js';
 
 const VALID_SKILL = {
@@ -79,7 +87,7 @@ test('createMemoryRiver exposes the skills namespace', () => {
       assert.equal(typeof river.skills[method], 'function');
     }
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -404,7 +412,7 @@ test('hybrid skill search filters v1 before applying the result limit', async ()
     assert.equal(results.length, 1);
     assert.equal(results[0].skillName, VALID_SKILL.name);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -468,7 +476,7 @@ test('decay applies the slow curve only to active v2 skills', async () => {
     assert.equal(result.wouldDelete, 1);
     assert.equal(result.deleteCandidateSummary.firstId, rows[1].id);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -534,7 +542,7 @@ test('decay is time-driven and active v2 skills lose about one quarter HP', asyn
     assert.equal(100 - firstScores[1], (100 - firstScores[0]) / 4);
   } finally {
     Date.now = originalNow;
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    bestEffortRmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
