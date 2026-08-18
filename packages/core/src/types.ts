@@ -2,6 +2,8 @@
  * Unified Types - memory-river
  * Merged from v4/types.ts + context-river/concentrator.ts
  */
+import * as os from 'node:os';
+
 export type MemoryCategory =
   | "preference"
   | "fact"
@@ -243,7 +245,7 @@ export interface TranscriptWatermarkRow {
   updatedAt: number;
 }
 
-export type ConcentratorProvider = "gemini" | "deepseek" | "all_failed";
+export type ConcentratorProvider = "codex" | "gemini" | "deepseek" | "all_failed";
 export type ConcentratorStatOutcome = "success" | "partial" | "failure";
 export type ConcentratorFailureReason = "broken_json" | "timeout" | "quota" | "other";
 
@@ -366,8 +368,9 @@ export interface InboxWriteOptions {
  *    實際 embedder-v5.ts 使用 Ollama，不受此欄位影響。
  *
  * Concentration（濃縮）Provider 順序：
- *   - 預設：Gemini → DeepSeek
+ *   - 預設：Codex CLI → Gemini → DeepSeek
  *   - Gemini 若連續 3 次 503：冷卻 90 秒，期間直接跳過 Gemini
+ *   - Codex CLI 若連續 3 次失敗：冷卻 90 秒，期間直接跳過 Codex CLI
  *   - concentrate() 全失敗時仍由 ConcentratorAdapter 走 deterministic fallback capsule
  *
  * =============================================================================
@@ -434,8 +437,12 @@ export interface PluginConfig {
   };
   concentration?: {
     model?: string;
-    provider?: 'gemini' | 'deepseek';
+    provider?: 'codex' | 'gemini' | 'deepseek';
     geminiApiKey?: string;
+    codexModel?: string;
+    codexReasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    codexWorkdir?: string;
+    codexTimeoutMs?: number;
     maxTokens?: number;
     deepseekApiKey?: string;
     deepseekModel?: string;
@@ -485,8 +492,11 @@ export const DEFAULT_CONFIG: Omit<Required<PluginConfig>, 'dbPath' | 'ramDbPath'
     decayPerRun: 5,
     decayIntervalMs: 24 * 60 * 60 * 1000,
     deleteThreshold: 0,
-    coreCategories: ["identity", "preference", "constraint", "business", "core_rule"],
-    coreImportanceThreshold: 0.8,
+    // 與上面 cleanupEngine 及 store-v4 的 DEFAULT_HEALTH_CONFIG 保持一致。
+    // 這三處曾經各寫各的(0.75 / 0.8 / 0.85,category 也是 6 / 5 / 4 類),
+    // 「記憶要多重要才不被淘汰」會因為呼叫入口不同而得到不同答案。改一處要改三處。
+    coreCategories: ["identity", "preference", "constraint", "business", "decision", "core_rule"],
+    coreImportanceThreshold: 0.75,
     skillDecayFactor: 0.25,
   },
   hooks: {
@@ -503,13 +513,13 @@ export const DEFAULT_CONFIG: Omit<Required<PluginConfig>, 'dbPath' | 'ramDbPath'
   },
 concentration: {
     model: 'gemini-2.5-flash-lite',
-    /**
-     * @deprecated 此欄位已失效。實際 fallback 順序由 concentrator-adapter.ts 內定
-     *             （Gemini → DeepSeek），不受 config 影響。
-     *             保留欄位以避免破壞既有宿主設定，請勿依賴其值。
-     */
-    provider: 'gemini',
+    /** Provider chain starts with Codex when this is 'codex'; old values retain their legacy chain. */
+    provider: 'codex',
     geminiApiKey: "",
+    codexModel: 'gpt-5.6-luna',
+    codexReasoningEffort: 'low',
+    codexWorkdir: os.homedir(),
+    codexTimeoutMs: 120000,
     maxTokens: 8192,
     deepseekApiKey: "",
     deepseekModel: 'deepseek-v4-flash',

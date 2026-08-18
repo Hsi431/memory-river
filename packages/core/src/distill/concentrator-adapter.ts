@@ -10,6 +10,8 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { ContextMessage, type ConcentratorFailureReason, type ConcentratorProvider } from '../types.js';
 import { CapsuleBridge } from '../pipeline/capsule-bridge.js';
 import { sharedLLMRateLimiter } from '../util/rate-limiter.js';
@@ -996,7 +998,7 @@ ${conversationLog}
 【時間正規化】對話每個 turn 前綴有 [at=<ISO>] 絕對時間戳。當事實含「昨天/今天/明天/上週/下個月/剛才/之後」等相對時間，必須以該事實所在 turn 的 at 為錨，在 text 內寫出絕對日期（例：「在 2023-05-07（原文稱昨天）參加了…」），並填 when 欄位。若 at=unknown 或語意不足以唯一解析，保留原文相對詞、不可猜，when.precision 與 when.source 設為 "unknown"。明確日期、月份、年份、區間、期限、事件先後順序都要保留，不要只寫「最近」「之前」。
 
 每筆格式：
-{ "text": "...", "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other", "importance": 0.0-1.0, "tags": ["..."], "subject": "主體（選配）", "predicate": "關係/屬性/動作（選配）", "value": "值，字串/數字/布林（選配）", "unit": "數值單位（選配）", "when": { "start": "YYYY-MM-DD 或 ISO（選配）", "end": "（選配）", "precision": "datetime|date|month|year|range|unknown", "sourceText": "原文時間詞", "source": "explicit|relative_anchored|contextual|unknown", "anchor": "錨定用的 turn ISO 時間" } }
+{ "text": "...", "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other", "tags": ["..."], "subject": "主體（選配）", "predicate": "關係/屬性/動作（選配）", "value": "值，字串/數字/布林（選配）", "unit": "數值單位（選配）", "when": { "start": "YYYY-MM-DD 或 ISO（選配）", "end": "（選配）", "precision": "datetime|date|month|year|range|unknown", "sourceText": "原文時間詞", "source": "explicit|relative_anchored|contextual|unknown", "anchor": "錨定用的 turn ISO 時間" } }
 （subject/predicate/value/unit/entities/when 全為選配：有對應資訊才填，沒有就整個省略，不可填空字串或編造。text 仍是主要可讀、可檢索內容；日期、數值、人名、地名、檔案名、產品名、事件名也必須同時寫進 text，能正規化的日期同時寫入 text 與 when。）
 
 收錄：
@@ -1016,7 +1018,6 @@ ${conversationLog}
 - 一筆只表達一個可獨立更新的主張，必須自足：寫明主體、內容、作用域，以及必要的時間、狀態、條件或理由；不得使用「這個」「上述方案」「已處理」等脫離原文便無法理解的指涉。
 - 保留足以語意檢索與回查原始 transcript 的專案、元件、人物或事件名稱，但不要複製整段對話、長篇推理、日誌或操作過程（原文可由 rehydrate 取回）。
 - category 選最能代表該主張長期用途者；tags 用少量具辨識力的實體/專案/領域/狀態詞。
-- importance 依「跨時間耐久性 × 未來決策效用」評分，不依篇幅、情緒強度或主題是否熱門；較低分代表耐久性或決策效用較低，但不得因此省略可獨立檢索的具體事實。
 
 CRITICAL INSTRUCTION: Output ONLY valid, raw JSON. Do NOT wrap in markdown code blocks. Start with '{' and end with '}'.
 
@@ -1043,7 +1044,6 @@ confidence 評分標準（0.0–1.0）：
     {
       "text": "精確的顆粒化記憶（含足夠上下文，獨立可理解；日期/數值/人名要寫進 text）",
       "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other",
-      "importance": 0.0-1.0,
       "tags": [],
       "subject": "主體（選配，省略則整個不要出現）",
       "predicate": "關係/屬性/動作（選配）",
@@ -1099,7 +1099,7 @@ ${capsuleLanguageInstruction}寫一段「前情提要」（600–900 字），�
 【時間正規化】對話每個 turn 前綴有 [at=<ISO>] 絕對時間戳。當事實含「昨天/今天/明天/上週/下個月/剛才/之後」等相對時間，必須以該事實所在 turn 的 at 為錨，在 text 內寫出絕對日期（例：「在 2023-05-07（原文稱昨天）參加了…」），並填 when 欄位。若 at=unknown 或語意不足以唯一解析，保留原文相對詞、不可猜，when.precision 與 when.source 設為 "unknown"。明確日期、月份、年份、區間、期限、事件先後順序都要保留，不要只寫「最近」「之前」。
 
 每筆格式：
-{ "text": "...", "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other", "importance": 0.0-1.0, "tags": ["..."], "subject": "主體（選配）", "predicate": "關係/屬性/動作（選配）", "value": "值，字串/數字/布林（選配）", "unit": "數值單位（選配）", "when": { "start": "YYYY-MM-DD 或 ISO（選配）", "end": "（選配）", "precision": "datetime|date|month|year|range|unknown", "sourceText": "原文時間詞", "source": "explicit|relative_anchored|contextual|unknown", "anchor": "錨定用的 turn ISO 時間" } }
+{ "text": "...", "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other", "tags": ["..."], "subject": "主體（選配）", "predicate": "關係/屬性/動作（選配）", "value": "值，字串/數字/布林（選配）", "unit": "數值單位（選配）", "when": { "start": "YYYY-MM-DD 或 ISO（選配）", "end": "（選配）", "precision": "datetime|date|month|year|range|unknown", "sourceText": "原文時間詞", "source": "explicit|relative_anchored|contextual|unknown", "anchor": "錨定用的 turn ISO 時間" } }
 （subject/predicate/value/unit/entities/when 全為選配：有對應資訊才填，沒有就整個省略，不可填空字串或編造。text 仍是主要可讀、可檢索內容；日期、數值、人名、地名、檔案名、產品名、事件名也必須同時寫進 text，能正規化的日期同時寫入 text 與 when。）
 
 收錄：
@@ -1119,7 +1119,6 @@ ${capsuleLanguageInstruction}寫一段「前情提要」（600–900 字），�
 - 一筆只表達一個可獨立更新的主張，必須自足：寫明主體、內容、作用域，以及必要的時間、狀態、條件或理由；不得使用「這個」「上述方案」「已處理」等脫離原文便無法理解的指涉。
 - 保留足以語意檢索與回查原始 transcript 的專案、元件、人物或事件名稱，但不要複製整段對話、長篇推理、日誌或操作過程（原文可由 rehydrate 取回）。
 - category 選最能代表該主張長期用途者；tags 用少量具辨識力的實體/專案/領域/狀態詞。
-- importance 依「跨時間耐久性 × 未來決策效用」評分，不依篇幅、情緒強度或主題是否熱門；較低分代表耐久性或決策效用較低，但不得因此省略可獨立檢索的具體事實。
 
 CRITICAL INSTRUCTION: Output ONLY valid, raw JSON. Do NOT wrap in markdown code blocks. Start with '{' and end with '}'.
 
@@ -1133,7 +1132,7 @@ confidence 評分標準（0.0–1.0）：
   "confidence": 0.85,
   "capsule": "任務B的自然語言前情提要...",
   "notes": [
-    { "text": "精確的顆粒化記憶（含足夠上下文，獨立可理解；日期/數值/人名要寫進 text）", "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other", "importance": 0.0, "tags": [], "subject": "（選配，省略則不要出現）", "predicate": "（選配）", "value": "（選配）", "unit": "（選配）", "when": { "start": "YYYY-MM-DD（選配）", "precision": "date", "sourceText": "原文時間詞", "source": "relative_anchored", "anchor": "turn ISO 時間" } }
+    { "text": "精確的顆粒化記憶（含足夠上下文，獨立可理解；日期/數值/人名要寫進 text）", "category": "fact|decision|entity|preference|constraint|identity|knowledge|history|business|other", "tags": [], "subject": "（選配，省略則不要出現）", "predicate": "（選配）", "value": "（選配）", "unit": "（選配）", "when": { "start": "YYYY-MM-DD（選配）", "precision": "date", "sourceText": "原文時間詞", "source": "relative_anchored", "anchor": "turn ISO 時間" } }
   ]
 }
 
@@ -1142,6 +1141,80 @@ confidence 評分標準（0.0–1.0）：
 - 若輸出即將過長，先縮短 analysis，不可任意刪除合格 notes
 - 必須回傳可完整 JSON.parse 的有效 JSON，不可輸出半截 JSON`;
   return isSourceLanguage ? `${sourceLanguageRequirementTop}\n\n${prompt}\n\n${sourceLanguageRequirementBottom}` : prompt;
+}
+
+export function buildImportanceScoringPrompt(noteTexts: string[]): string {
+  const numberedNotes = noteTexts
+    .map((text, index) => `${index + 1}. ${text}`)
+    .join('\n');
+
+  return `非互動模式,立即回答,不要提問、不要使用任何工具、不要讀檔。
+
+下面是即將存進 AI 長期記憶庫的記憶。請為每一則評 importance(0.0-1.0)。
+
+評分標準(照這個定義,不要自行更改):
+importance 依「跨時間耐久性 × 未來決策效用」評分,不依篇幅、情緒強度或主題是否熱門;
+較低分代表耐久性或決策效用較低。
+
+只輸出 JSON,不要任何其他文字、不要 markdown 圍欄。必須包含全部 <${noteTexts.length}> 筆:
+{"r":[{"n":<編號>,"i":<0.0-1.0>}]}
+
+${numberedNotes}`;
+}
+
+class ImportanceScoreParseError extends Error {
+  constructor(message: string, readonly scores: Map<number, number>) {
+    super(message);
+    this.name = 'ImportanceScoreParseError';
+  }
+}
+
+function parseImportanceScores(raw: string, expectedCount: number): Map<number, number> {
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let response: { r: unknown[] } | null = null;
+
+  for (let index = lines.length - 1; index >= 0; index--) {
+    try {
+      const candidate = JSON.parse(lines[index]) as unknown;
+      if (candidate && typeof candidate === 'object' && Array.isArray((candidate as { r?: unknown }).r)) {
+        response = candidate as { r: unknown[] };
+        break;
+      }
+    } catch {
+      // Codex progress lines and other non-JSON output are expected here.
+    }
+  }
+
+  if (!response) {
+    throw new ImportanceScoreParseError('importance score response parse failed', new Map());
+  }
+
+  const scores = new Map<number, number>();
+  for (const entry of response.r) {
+    if (!entry || typeof entry !== 'object') continue;
+    const item = entry as { n?: unknown; i?: unknown };
+    if (
+      typeof item.n === 'number'
+      && Number.isInteger(item.n)
+      && item.n >= 1
+      && item.n <= expectedCount
+      && typeof item.i === 'number'
+      && Number.isFinite(item.i)
+    ) {
+      scores.set(item.n, Math.max(0, Math.min(1, item.i)));
+    }
+  }
+
+  const missing = Array.from({ length: expectedCount }, (_, index) => index + 1)
+    .filter((number) => !scores.has(number));
+  if (missing.length > 0) {
+    throw new ImportanceScoreParseError(
+      `importance score response missing notes: ${missing.join(',')}`,
+      scores,
+    );
+  }
+
+  return scores;
 }
 
 // ─── 降級版 Prompt (專供本地小模型使用) ───
@@ -1295,15 +1368,155 @@ function classifyConcentratorFailure(err: unknown): ConcentratorFailureReason {
   return 'other';
 }
 
+const CODEX_FAILURE_BREAKER_THRESHOLD = 3;
+const CODEX_FAILURE_COOLDOWN_MS = 90_000;
 const GEMINI_503_BREAKER_THRESHOLD = 3;
 const GEMINI_503_COOLDOWN_MS = 90_000;
 
+let codexConsecutiveFailureCount = 0;
+let codexCooldownUntil = 0;
 let geminiConsecutive503Count = 0;
 let geminiCooldownUntil = 0;
 
 function isGemini503Error(err: unknown): boolean {
   const message = String((err as any)?.message ?? err ?? '').toLowerCase();
   return message.includes('gemini api error: 503');
+}
+
+export type CodexReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface CodexCliConfig {
+  model: string;
+  reasoningEffort: CodexReasoningEffort;
+  workdir: string;
+  timeoutMs: number;
+}
+
+type ExecFileCallback = (
+  error: NodeJS.ErrnoException | null,
+  stdout: string | Buffer,
+  stderr: string | Buffer,
+) => void;
+
+type ExecFileInvoker = (
+  file: string,
+  args: string[],
+  options: {
+    cwd: string;
+    timeout: number;
+  },
+  callback: ExecFileCallback,
+) => Pick<ChildProcess, 'kill' | 'stdin'> | undefined;
+
+export function buildCodexExecArgs(prompt: string, config: CodexCliConfig): string[] {
+  return [
+    'exec',
+    '-C', config.workdir,
+    '-c', `model=${config.model}`,
+    '-c', `model_reasoning_effort=${config.reasoningEffort}`,
+    prompt,
+  ];
+}
+
+function findBalancedJsonCandidates(text: string): string[] {
+  const stack: Array<{ opener: '[' | '{'; start: number }> = [];
+  const candidates: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString && ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === '[' || ch === '{') {
+      stack.push({ opener: ch, start: i });
+      continue;
+    }
+    if (ch !== ']' && ch !== '}') continue;
+
+    const expected = ch === ']' ? '[' : '{';
+    const top = stack[stack.length - 1];
+    if (!top || top.opener !== expected) continue;
+    stack.pop();
+    candidates.push(text.slice(top.start, i + 1));
+  }
+
+  return candidates;
+}
+
+export function parseCodexOutput(stdout: string): unknown {
+  const trimmed = stdout.trim();
+  if (!trimmed) throw new Error('Codex CLI returned empty stdout');
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+
+  const candidates = findBalancedJsonCandidates(stdout);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(candidates[i]);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {}
+  }
+
+  throw new Error('Codex CLI stdout did not contain parseable JSON');
+}
+
+export function runCodexCli(
+  prompt: string,
+  config: CodexCliConfig,
+  execFileImpl: ExecFileInvoker = execFile as unknown as ExecFileInvoker,
+): Promise<string> {
+  const args = buildCodexExecArgs(prompt, config);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let child: Pick<ChildProcess, 'kill' | 'stdin'> | undefined;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child?.kill('SIGTERM');
+      reject(new Error(`Codex CLI timed out after ${config.timeoutMs}ms`));
+    }, config.timeoutMs);
+
+    const finish = (error: NodeJS.ErrnoException | null, stdout: string | Buffer, stderr: string | Buffer): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (timedOut) return;
+      if (error) {
+        const detail = String(stderr || error.message || error);
+        reject(new Error(`Codex CLI failed: ${detail}`));
+        return;
+      }
+      try {
+        resolve(JSON.stringify(parseCodexOutput(String(stdout))));
+      } catch (parseError) {
+        reject(parseError);
+      }
+    };
+
+    child = execFileImpl('codex', args, {
+      cwd: config.workdir,
+      timeout: config.timeoutMs,
+    }, finish);
+    // execFile 不吃 stdio 選項,child 的 stdin 會是一個開著的 pipe,
+    // codex CLI 因此停在 "Reading additional input from stdin" 直到 timeout。
+    child?.stdin?.end();
+  });
 }
 
 function extractBalancedObjectForKey(text: string, key: string): string | null {
@@ -1520,7 +1733,11 @@ export interface ConcentratorConfig {
    */
   capsuleLanguage?: string;
   concentrationTarget?: number;
-  provider?: 'gemini' | 'deepseek';
+  provider?: 'codex' | 'gemini' | 'deepseek';
+  codexModel?: string;
+  codexReasoningEffort?: CodexReasoningEffort;
+  codexWorkdir?: string;
+  codexTimeoutMs?: number;
   maxTokens?: number;
   deepseekApiKey?: string;
   deepseekModel?: string;
@@ -1528,6 +1745,7 @@ export interface ConcentratorConfig {
   transcriptArchive: TranscriptArchive;
   sessionSummaryDir: string;
   llm?: LlmClient;
+  importanceScorer?: (prompt: string) => Promise<string>;
 }
 
 export interface CapsuleOutput {
@@ -1538,11 +1756,12 @@ export interface CapsuleOutput {
 }
 
 export class ConcentratorAdapter implements LlmClient {
-  private config: Required<Omit<ConcentratorConfig, 'statsStore' | 'transcriptArchive' | 'llm'>>;
+  private config: Required<Omit<ConcentratorConfig, 'statsStore' | 'transcriptArchive' | 'llm' | 'importanceScorer'>>;
   private capsuleBridge: CapsuleBridge;
   private statsStore?: Pick<MemoryStore, 'recordConcentratorStat'>;
   private transcriptArchive: TranscriptArchive;
   private llm?: LlmClient;
+  private importanceScorer?: (prompt: string) => Promise<string>;
   private readonly MAX_CONTEXT_WINDOW = 200000; 
 
   // ── 動態水位線常數 ──────────────────────────────────────
@@ -1558,6 +1777,10 @@ export class ConcentratorAdapter implements LlmClient {
       capsuleLanguage: config.capsuleLanguage ?? '繁體中文',
       concentrationTarget: config.concentrationTarget ?? 0,
       provider: config.provider ?? 'gemini',
+      codexModel: config.codexModel ?? 'gpt-5.6-luna',
+      codexReasoningEffort: config.codexReasoningEffort ?? 'low',
+      codexWorkdir: config.codexWorkdir || os.homedir(),
+      codexTimeoutMs: config.codexTimeoutMs ?? 120000,
       maxTokens: config.maxTokens ?? 8192,
       deepseekApiKey: config.deepseekApiKey || '',
       deepseekModel: config.deepseekModel ?? 'deepseek-v4-flash',
@@ -1567,6 +1790,7 @@ export class ConcentratorAdapter implements LlmClient {
     this.statsStore = config.statsStore;
     this.transcriptArchive = config.transcriptArchive;
     this.llm = config.llm;
+    this.importanceScorer = config.importanceScorer;
     this.capsuleBridge = new CapsuleBridge(this.config.inboxPath);
   }
 
@@ -1650,6 +1874,52 @@ export class ConcentratorAdapter implements LlmClient {
     ].join('\n\n');
   }
 
+  private async scoreNoteImportance(
+    notes: Array<Record<string, any>>,
+    metricContext?: { sessionIdentity?: SessionIdentity },
+  ): Promise<void> {
+    if (notes.length === 0) return;
+
+    const prompt = buildImportanceScoringPrompt(notes.map((note) => typeof note.text === 'string' ? note.text : ''));
+    let scores = new Map<number, number>();
+
+    try {
+      const raw = this.importanceScorer
+        ? await this.importanceScorer(prompt)
+        : await this.callWithFallback(
+          prompt,
+          'scoreImportance',
+          undefined,
+          { sessionIdentity: metricContext?.sessionIdentity, inputTokens: estimatePromptTokens(prompt) },
+          2048,
+        );
+      scores = parseImportanceScores(raw, notes.length);
+    } catch (error) {
+      if (error instanceof ImportanceScoreParseError) {
+        scores = error.scores;
+      }
+
+      const message = String((error as any)?.message ?? error).toLowerCase();
+      const reason = error instanceof ImportanceScoreParseError
+        ? (message.includes('missing') ? 'partial missing' : 'parse failed')
+        : (message.includes('timeout') || message.includes('timed out') || message.includes('abort')
+          ? 'timeout'
+          : 'call failed');
+      console.warn(`[ConcentratorAdapter] Importance scoring fallback: ${reason}; missing scores use 0.5`);
+    }
+
+    notes.forEach((note, index) => {
+      const importance = scores.get(index + 1);
+      if (importance === undefined) {
+        note.importance = 0.5;
+        note.importanceFallback = true;
+      } else {
+        note.importance = importance;
+        delete note.importanceFallback;
+      }
+    });
+  }
+
   async concentrate(
     rawMessages: ContextMessage[],
     dryRun: boolean = false,
@@ -1672,7 +1942,7 @@ export class ConcentratorAdapter implements LlmClient {
       return { messages, wasConcentrated: false, processedThroughIndex: 0 };
     }
 
-    if (!this.llm && !this.config.apiKey && !this.config.deepseekApiKey) {
+    if (!this.llm && this.config.provider !== 'codex' && !this.config.apiKey && !this.config.deepseekApiKey) {
       console.warn('[ConcentratorAdapter] Concentration skipped: no LLM API key configured; raw transcripts and recall remain available.');
       return { messages, wasConcentrated: false, processedThroughIndex: 0 };
     }
@@ -1879,7 +2149,9 @@ export class ConcentratorAdapter implements LlmClient {
         const originalTokens = estimatePromptTokens(conversationLog);
         const summaryTokens = estimatePromptTokens(capsuleText);
         const compressionRatio = originalTokens / Math.max(1, summaryTokens);
-        const notes = parsedData.notes || [];
+        const notes: Array<Record<string, any>> = Array.isArray(parsedData.notes)
+          ? parsedData.notes.map((item: unknown) => item && typeof item === 'object' ? item as Record<string, any> : {})
+          : [];
         const sourceEntryIds = sourceEntryIdsProbe?.matched ? sourceEntryIdsProbe.sourceEntryIds : [];
         const sourceEntryRange = sourceEntryIds.length > 0
           ? {
@@ -1911,6 +2183,10 @@ export class ConcentratorAdapter implements LlmClient {
           console.log(`[ConcentratorAdapter] Short-term capsule written (health: 30, confidence: ${confidence.toFixed(2)})`);
         }
 
+        await this.scoreNoteImportance(notes, {
+          sessionIdentity: context.sessionIdentity,
+        });
+
         const acceptedNoteTexts: string[] = [];
         for (const item of notes) {
           const text = typeof item.text === 'string' ? item.text.trim() : '';
@@ -1934,6 +2210,7 @@ export class ConcentratorAdapter implements LlmClient {
                 confidence,
                 firstTimestamp,
                 lastTimestamp,
+                ...(item.importanceFallback === true ? { importanceFallback: true } : {}),
                 ...(sourceEntryIds.length > 0 ? { sourceEntryIds } : {}),
                 ...(sourceEntryRange ? { sourceEntryRange } : {}),
                 // Optional structured enrichment — additive, stored as-is (no schema change),
@@ -1962,7 +2239,7 @@ export class ConcentratorAdapter implements LlmClient {
           || (rawMessages[0] as any)?.sessionId
           || 'unknown';
         const concentratedAt = Date.now();
-        await this.writeSessionSummary({ sessionId, concentratedAt, capsule: capsuleText, notes: parsedData.notes || [], primaryRequest: summary?.primaryRequest || '', pendingTasks: summary?.pendingTasks || '', nextStep: summary?.nextStep || '' });
+        await this.writeSessionSummary({ sessionId, concentratedAt, capsule: capsuleText, notes: notes as SessionSummary['notes'], primaryRequest: summary?.primaryRequest || '', pendingTasks: summary?.pendingTasks || '', nextStep: summary?.nextStep || '' });
 
       } catch (err) {
         console.error("[ConcentratorAdapter] Compaction failed:", err);
@@ -1998,7 +2275,7 @@ export class ConcentratorAdapter implements LlmClient {
 
   /**
    * Provider 輪替 fallback 核心方法
-   * 依序嘗試 gemini → deepseek，任一成功即返回
+   * 依序嘗試 codex → gemini → deepseek，任一成功即返回
    * Gemini 若連續 3 次 503，冷卻 90 秒內直接跳過
    */
   private async callWithFallback(
@@ -2012,22 +2289,44 @@ export class ConcentratorAdapter implements LlmClient {
       return this.llm.generate(prompt, { purpose: fnName, maxTokens });
     }
 
-    const providers: ConcentratorProvider[] = [];
+    const providers: ConcentratorProvider[] = this.config.provider === 'codex'
+      ? ['codex', 'gemini', 'deepseek']
+      : ['gemini', 'deepseek'];
     const now = Date.now();
+    if (providers.includes('codex')) {
+      if (now < codexCooldownUntil) {
+        console.warn(`[${fnName}] codex skipped: circuit breaker cooling down for ${Math.ceil((codexCooldownUntil - now) / 1000)}s`);
+      } else {
+        // codex has no API key; authentication belongs to the local CLI.
+      }
+    }
+    const eligibleProviders = providers.filter((provider) => provider !== 'codex' || now >= codexCooldownUntil);
     if (now < geminiCooldownUntil) {
       console.warn(`[${fnName}] gemini skipped: circuit breaker cooling down for ${Math.ceil((geminiCooldownUntil - now) / 1000)}s`);
-    } else {
-      providers.push('gemini');
     }
-    providers.push('deepseek');
+    const orderedProviders = eligibleProviders.filter((provider) => provider !== 'gemini' || now >= geminiCooldownUntil);
     const attemptedProviders: ConcentratorProvider[] = [];
     const startedAt = Date.now();
     const shouldRecordMetric = fnName === 'concentrate';
     let lastError: any = null;
 
-    for (const provider of providers) {
+    for (const provider of orderedProviders) {
       attemptedProviders.push(provider);
       try {
+        if (provider === 'codex') {
+          const result = await this.callProvider(provider, prompt, maxTokens);
+          codexConsecutiveFailureCount = 0;
+          await this.recordConcentratorAttemptMetric({
+            metricContext,
+            provider,
+            outcome: 'success',
+            attemptedProviders,
+            inputTokens: metricContext?.inputTokens ?? estimatePromptTokens(prompt),
+            outputTokens: estimatePromptTokens(result),
+            durationMs: Date.now() - startedAt,
+          }, shouldRecordMetric);
+          return result;
+        }
         if (provider === 'gemini') {
           if (this.config.apiKey) {
             const result = await this.callProvider(provider, prompt, maxTokens);
@@ -2065,7 +2364,13 @@ export class ConcentratorAdapter implements LlmClient {
         }
       } catch (err) {
         console.warn(`[${fnName}] ${provider} failed; trying next provider:`, err);
-        if (provider === 'gemini') {
+        if (provider === 'codex') {
+          codexConsecutiveFailureCount += 1;
+          if (codexConsecutiveFailureCount >= CODEX_FAILURE_BREAKER_THRESHOLD) {
+            codexCooldownUntil = Date.now() + CODEX_FAILURE_COOLDOWN_MS;
+            console.warn(`[${fnName}] codex circuit breaker opened for ${CODEX_FAILURE_COOLDOWN_MS / 1000}s after ${codexConsecutiveFailureCount} consecutive failures`);
+          }
+        } else if (provider === 'gemini') {
           if (isGemini503Error(err)) {
             geminiConsecutive503Count += 1;
             if (geminiConsecutive503Count >= GEMINI_503_BREAKER_THRESHOLD) {
@@ -2099,6 +2404,14 @@ export class ConcentratorAdapter implements LlmClient {
   ): Promise<string> {
     if (provider === 'gemini') {
       return callGeminiAPI(this.config.apiKey, this.config.model, prompt, maxTokens);
+    }
+    if (provider === 'codex') {
+      return runCodexCli(prompt, {
+        model: this.config.codexModel,
+        reasoningEffort: this.config.codexReasoningEffort,
+        workdir: this.config.codexWorkdir,
+        timeoutMs: this.config.codexTimeoutMs,
+      });
     }
     if (provider === 'deepseek') {
       return callDeepSeekAPI(this.config.deepseekApiKey, this.config.deepseekModel, prompt, maxTokens);

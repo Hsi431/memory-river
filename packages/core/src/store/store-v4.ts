@@ -36,11 +36,27 @@ import {
 
 // 動態載入 jieba
 let jieba: any = null;
+let jiebaUnavailable = false;
 
 const loadJieba = async (): Promise<any> => {
   if (jieba) return jieba;
+  if (jiebaUnavailable) return null;
   const module = await import("nodejieba");
-  jieba = module.default ?? module;
+  const candidate = module.default ?? module;
+  // nodejieba 的 index.js 在原生 binding 缺失時仍能 import 成功,只有第一次真正
+  // 呼叫才丟。這裡先探一次,讓失敗落在 tokenizeChinese 的 catch 裡走降級,
+  // 而不是逃出去把每一次 store/update/ftsSearch 都打掛。
+  try {
+    candidate.cut("測");
+  } catch (error: any) {
+    jiebaUnavailable = true;
+    console.warn(
+      "[MemoryStore] nodejieba unavailable, falling back to per-character Chinese tokenization:",
+      error?.message ?? error,
+    );
+    throw error;
+  }
+  jieba = candidate;
   return jieba;
 };
 
@@ -81,10 +97,13 @@ export class SchemaViolationError extends Error {
 }
 
 // 預設健康度配置
+// coreImportanceThreshold 必須與 types.ts 的 DEFAULT_CLEANUP_CONFIG 一致。
+// 兩處曾經分別是 0.85 / 0.75,同一個「記憶要多重要才不被淘汰」的問題會因為
+// 呼叫入口不同而得到差一倍的答案(0.85→41% 受保護、0.75→76%)。改一邊要改兩邊。
 const DEFAULT_HEALTH_CONFIG = {
   initialScore: 100,
-  coreCategories: ["identity", "constraint", "business", "core_rule"],
-  coreImportanceThreshold: 0.85,
+  coreCategories: ["identity", "preference", "constraint", "business", "decision", "core_rule"],
+  coreImportanceThreshold: 0.75,
   skillDecayFactor: 0.25,
 };
 
@@ -206,6 +225,7 @@ function metadataHasHooks(metadata: unknown): boolean {
 type DecayOptions = {
   coreCategories?: string[];
   coreImportanceThreshold?: number;
+  capsuleBypassCore?: boolean;
   skillCapsuleProtection?: boolean;
   dryRun?: boolean;
   deleteWith?: (id: string) => Promise<boolean>;
@@ -3000,6 +3020,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
     let deferredDecay = 0, deferredDelete = 0;
     const effectiveCoreCategories = options.coreCategories ?? this.healthConfig.coreCategories;
     const effectiveCoreImportanceThreshold = options.coreImportanceThreshold ?? this.healthConfig.coreImportanceThreshold;
+    const capsuleBypassCore = options.capsuleBypassCore ?? true;
     const protectSkillCapsules = options.skillCapsuleProtection ?? true;
     const isDryRun = options.dryRun ?? false;
     const maxDelete = options.maxDelete === undefined ? Infinity : Math.max(0, Math.floor(options.maxDelete));
@@ -3030,8 +3051,13 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
       const id = memoryRow.id;
       if (id.startsWith("init_")) continue;
 
-      const isCore = effectiveCoreCategories.includes(memoryRow.category as string) ||
-                     (memoryRow.importance as number) >= effectiveCoreImportanceThreshold;
+      const metaObj = this.parseMetadata(memoryRow.metadata as string);
+      // dynamic capsule 出生就是短命設計(health 30),不該因為 importance 高而被當成核心記憶保護
+      const isDynamicCapsule = metaObj?.type === 'dynamic_capsule';
+      const isCore = (!capsuleBypassCore || !isDynamicCapsule) && (
+        effectiveCoreCategories.includes(memoryRow.category as string) ||
+        (memoryRow.importance as number) >= effectiveCoreImportanceThreshold
+      );
 
       if (isCore) {
         coreProtected++;
@@ -3039,7 +3065,6 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
       }
 
       // 技能膠囊不參與灰塵清理(只響應用戶明確刪除)
-      const metaObj = this.parseMetadata(memoryRow.metadata as string);
       if (protectSkillCapsules && metaObj?.capsuleType === 'skill_capsule') {
         continue;
       }
