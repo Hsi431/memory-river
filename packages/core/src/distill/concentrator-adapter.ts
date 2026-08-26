@@ -748,7 +748,10 @@ function stripThinkingBlocks(msg: ContextMessage): ContextMessage {
 }
 
 // ─── 濃縮前置過濾器 (Claude 究極四層降噪濾網版 - UI 防崩潰 Hex 編碼) ───
-function preFilterForConcentration(messages: ContextMessage[]): ContextMessage[] {
+function preFilterForConcentration(
+  messages: ContextMessage[],
+  internalMessagePrefixes: string[] = [],
+): ContextMessage[] {
   const seenCodeBlocks = new Set<string>();
   let beforeLength = 0;
   let afterLength = 0;
@@ -773,6 +776,11 @@ function preFilterForConcentration(messages: ContextMessage[]): ContextMessage[]
     // 🛡️ 第 1 層：完全移除 tool/function/tool_result/toolResult
     // ==========================================
     if (['tool', 'function', 'tool_result', 'toolResult'].includes(role)) {
+      return null;
+    }
+
+    const trimmedText = extractTextForConcentrationContent(cleanMsg.content).trimStart();
+    if (internalMessagePrefixes.some((prefix) => trimmedText.startsWith(prefix))) {
       return null;
     }
 
@@ -1726,6 +1734,7 @@ export interface ConcentratorConfig {
   inboxPath: string;
   timezone?: string;
   capsuleCategory?: string;
+  internalMessagePrefixes?: string[];
   /**
    * Language for the capsule (前情提要). Default '繁體中文' preserves the
    * Chinese-first benchmark behavior. Pass 'source' to make the distiller
@@ -1736,6 +1745,7 @@ export interface ConcentratorConfig {
   provider?: 'codex' | 'gemini' | 'deepseek';
   codexModel?: string;
   codexReasoningEffort?: CodexReasoningEffort;
+  codexReasoningEffortByPurpose?: Record<string, CodexReasoningEffort>;
   codexWorkdir?: string;
   codexTimeoutMs?: number;
   maxTokens?: number;
@@ -1774,11 +1784,13 @@ export class ConcentratorAdapter implements LlmClient {
       model: config.model,
       inboxPath: config.inboxPath,
       capsuleCategory: config.capsuleCategory ?? 'history',
+      internalMessagePrefixes: config.internalMessagePrefixes ?? [],
       capsuleLanguage: config.capsuleLanguage ?? '繁體中文',
       concentrationTarget: config.concentrationTarget ?? 0,
       provider: config.provider ?? 'gemini',
       codexModel: config.codexModel ?? 'gpt-5.6-luna',
       codexReasoningEffort: config.codexReasoningEffort ?? 'low',
+      codexReasoningEffortByPurpose: config.codexReasoningEffortByPurpose ?? {},
       codexWorkdir: config.codexWorkdir || os.homedir(),
       codexTimeoutMs: config.codexTimeoutMs ?? 120000,
       maxTokens: config.maxTokens ?? 8192,
@@ -1838,7 +1850,7 @@ export class ConcentratorAdapter implements LlmClient {
   }
 
   buildFallbackCapsule(messages: ContextMessage[]): string {
-    const cleaned = preFilterForConcentration(messages)
+    const cleaned = preFilterForConcentration(messages, this.config.internalMessagePrefixes)
       .map((m) => ({
         role: m.role,
         text: sanitizeForFallbackSummary(extractTextForConcentrationContent(m.content)),
@@ -2027,7 +2039,7 @@ export class ConcentratorAdapter implements LlmClient {
     if (messagesToSummarize.length > 0) {
       try {
         // 👇 四層完美過濾濾網啟動！
-        const filteredForLLM = preFilterForConcentration(messagesToSummarize);
+        const filteredForLLM = preFilterForConcentration(messagesToSummarize, this.config.internalMessagePrefixes);
 
         const conversationLog = filteredForLLM
           .map(m => {
@@ -2164,7 +2176,7 @@ export class ConcentratorAdapter implements LlmClient {
         if (capsuleText) {
           await this.capsuleBridge.writeToInbox("【前情提要】\n" + capsuleText, {
             category: this.config.capsuleCategory,
-            importance: 0.8,
+            importance: 0.3,
             metadata: {
               type: 'dynamic_capsule',
               health: 30,
@@ -2314,7 +2326,7 @@ export class ConcentratorAdapter implements LlmClient {
       attemptedProviders.push(provider);
       try {
         if (provider === 'codex') {
-          const result = await this.callProvider(provider, prompt, maxTokens);
+          const result = await this.callProvider(provider, prompt, maxTokens, fnName);
           codexConsecutiveFailureCount = 0;
           await this.recordConcentratorAttemptMetric({
             metricContext,
@@ -2329,7 +2341,7 @@ export class ConcentratorAdapter implements LlmClient {
         }
         if (provider === 'gemini') {
           if (this.config.apiKey) {
-            const result = await this.callProvider(provider, prompt, maxTokens);
+            const result = await this.callProvider(provider, prompt, maxTokens, fnName);
             geminiConsecutive503Count = 0;
             await this.recordConcentratorAttemptMetric({
               metricContext,
@@ -2347,7 +2359,7 @@ export class ConcentratorAdapter implements LlmClient {
         }
         if (provider === 'deepseek') {
           if (this.config.deepseekApiKey) {
-            const result = await this.callProvider(provider, prompt, maxTokens);
+            const result = await this.callProvider(provider, prompt, maxTokens, fnName);
             await this.recordConcentratorAttemptMetric({
               metricContext,
               provider,
@@ -2401,22 +2413,27 @@ export class ConcentratorAdapter implements LlmClient {
     provider: ConcentratorProvider,
     prompt: string,
     maxTokens: number,
+    purpose: string,
   ): Promise<string> {
     if (provider === 'gemini') {
       return callGeminiAPI(this.config.apiKey, this.config.model, prompt, maxTokens);
     }
     if (provider === 'codex') {
-      return runCodexCli(prompt, {
-        model: this.config.codexModel,
-        reasoningEffort: this.config.codexReasoningEffort,
-        workdir: this.config.codexWorkdir,
-        timeoutMs: this.config.codexTimeoutMs,
-      });
+      return runCodexCli(prompt, this.buildCodexOptions(purpose));
     }
     if (provider === 'deepseek') {
       return callDeepSeekAPI(this.config.deepseekApiKey, this.config.deepseekModel, prompt, maxTokens);
     }
     throw new Error(`Unsupported provider: ${provider}`);
+  }
+
+  buildCodexOptions(purpose: string): CodexCliConfig {
+    return {
+      model: this.config.codexModel,
+      reasoningEffort: this.config.codexReasoningEffortByPurpose[purpose] ?? this.config.codexReasoningEffort,
+      workdir: this.config.codexWorkdir,
+      timeoutMs: this.config.codexTimeoutMs,
+    };
   }
 
   private async recordConcentratorAttemptMetric(stat: {

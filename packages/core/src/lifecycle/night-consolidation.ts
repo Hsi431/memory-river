@@ -50,6 +50,7 @@ export interface ConsolidationResult {
   executedAt: number;
   durationMs: number;
   errors: string[];
+  planOnly: boolean;
 }
 
 // ============================================================================
@@ -128,21 +129,29 @@ export class NightConsolidator {
 
   /**
    * 執行夜間整理（指定時間範圍）
-   * @param range 'today' | 'yesterday' | number (days ago)
+   * @param range 'today' | 'yesterday' | 'last24h' | 'all' | number (days ago)
    */
   async consolidateRange(
-    range: 'today' | 'yesterday' | number,
+    range: 'today' | 'yesterday' | 'last24h' | 'all' | number,
     runId = randomUUID(),
     source: NightRecoverySource = 'scheduled_timer',
+    options?: { planOnly?: boolean; planOutPath?: string },
   ): Promise<ConsolidationResult> {
     const startMs = Date.now();
     const errors: string[] = [];
+    const planOnly = options?.planOnly === true;
 
     // 1. 取出目標記憶
-    let startOfDay: number;
-    let endOfDay: number;
+    let startOfDay: number | undefined;
+    let endOfDay: number | undefined;
 
-    if (range === 'today') {
+    if (range === 'all') {
+      // 全庫掃描，不做時間過濾
+    } else if (range === 'last24h') {
+      const now = Date.now();
+      startOfDay = now - 24 * 60 * 60 * 1000;
+      endOfDay = now;
+    } else if (range === 'today') {
       const now = new Date();
       startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime();
       endOfDay = Date.now();
@@ -159,15 +168,19 @@ export class NightConsolidator {
       endOfDay = new Date(target.getFullYear(), target.getMonth(), target.getDate(), 23, 59, 59, 999).getTime();
     }
 
-    console.log(`[NightConsolidation] Range: ${new Date(startOfDay).toLocaleString('zh-TW')} ~ ${range === 'today' ? 'now' : new Date(endOfDay).toLocaleString('zh-TW')}`);
+    console.log(range === 'all'
+      ? '[NightConsolidation] Range: all'
+      : `[NightConsolidation] Range: ${new Date(startOfDay!).toLocaleString('zh-TW')} ~ ${range === 'today' ? 'now' : new Date(endOfDay!).toLocaleString('zh-TW')}`);
 
     let memories: MemoryEntry[];
     try {
       const all = await this.store.queryAll(10000);
-      memories = all.filter(m => {
-        const t = m.createdAt || m.updatedAt;
-        return t >= startOfDay && t <= endOfDay;
-      });
+      memories = range === 'all'
+        ? all
+        : all.filter(m => {
+          const t = m.createdAt || m.updatedAt;
+          return t >= startOfDay! && t <= endOfDay!;
+        });
       const candidateTimes = memories
         .map(m => m.createdAt || m.updatedAt)
         .filter(t => typeof t === 'number' && Number.isFinite(t));
@@ -201,6 +214,7 @@ export class NightConsolidator {
         executedAt: Date.now(),
         durationMs: Date.now() - startMs,
         errors,
+        planOnly,
       };
     }
 
@@ -219,13 +233,14 @@ export class NightConsolidator {
         executedAt: Date.now(),
         durationMs: Date.now() - startMs,
         errors: [],
+        planOnly,
       };
     }
 
     console.log(`[NightConsolidation] Retrieved ${memories.length} records`);
 
     // 廣播：開始執行
-    const rangeLabel = range === 'today' ? '今晚' : `近 ${range} 天`;
+    const rangeLabel = range === 'all' ? '全庫' : range === 'today' ? '今晚' : `近 ${range} 天`;
     this._broadcast(`🌙 Night Consolidation 啟動（範圍：${rangeLabel}），共 ${memories.length} 筆記錄待處理`);
 
     // 2. LLM 決策
@@ -263,15 +278,25 @@ export class NightConsolidator {
         executedAt: Date.now(),
         durationMs: Date.now() - startMs,
         errors,
+        planOnly,
       };
     }
 
     // 3. 執行決策
-    try {
-      await this.executePlan(plan, errors, runId, source);
-    } catch (err: any) {
-      errors.push(`執行計畫失敗: ${err.message}`);
-      this._broadcast(`❌ Night Consolidation 失敗｜錯誤: ${err.message}`);
+    if (planOnly) {
+      try {
+        this.writePlan(plan, memories, runId, options?.planOutPath);
+      } catch (err: any) {
+        errors.push(`寫入整理計畫失敗: ${err.message}`);
+        this._broadcast(`❌ Night Consolidation 失敗｜錯誤: ${err.message}`);
+      }
+    } else {
+      try {
+        await this.executePlan(plan, errors, runId, source);
+      } catch (err: any) {
+        errors.push(`執行計畫失敗: ${err.message}`);
+        this._broadcast(`❌ Night Consolidation 失敗｜錯誤: ${err.message}`);
+      }
     }
 
     // 4. 寫日誌
@@ -280,6 +305,7 @@ export class NightConsolidator {
       executedAt: Date.now(),
       durationMs: Date.now() - startMs,
       errors,
+      planOnly,
     };
 
     this.writeLog(result);
@@ -745,5 +771,34 @@ ${memoryTexts}
     } catch (err: any) {
       console.error('[NightConsolidation] Failed to write log:', err.message);
     }
+  }
+
+  private writePlan(
+    plan: ConsolidationPlan,
+    memories: MemoryEntry[],
+    runId: string,
+    planOutPath?: string,
+  ): void {
+    const outputPath = planOutPath ?? path.join(path.dirname(this.logPath), `consolidation-plan-${runId}.json`);
+    const memoryById = new Map(memories.map(memory => [memory.id, memory]));
+    const decisions = plan.decisions.map(decision => {
+      const memory = memoryById.get(decision.memoryId);
+      return {
+        ...decision,
+        category: memory?.category,
+        importance: memory?.importance,
+        text: memory?.text.slice(0, 200),
+      };
+    });
+    const output = {
+      runId,
+      planOnly: true,
+      generatedAt: Date.now(),
+      ...plan,
+      decisions,
+    };
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+    console.log(`[NightConsolidation] Plan written: ${outputPath}`);
   }
 }

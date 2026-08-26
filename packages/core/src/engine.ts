@@ -758,7 +758,7 @@ export class MemoryRiverEngine {
   });
   console.log('[NightConsolidator] run started');
   try {
-    const result = await this.nightConsolidatorRef.consolidateToday(runId, source);
+    const result = await this.nightConsolidatorRef.consolidateRange('last24h', runId, source);
     this.lastNightConsolidatorSuccessfulRunAt = Date.now();
     this.recordNightConsolidationStat({
       runId,
