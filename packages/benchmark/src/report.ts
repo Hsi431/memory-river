@@ -34,14 +34,14 @@ export function renderInstrumentationSummary(report: BenchmarkReport): string {
         completionTokens?: number;
         byProvider?: Record<string, { promptTokens?: number; completionTokens?: number }>;
       };
-      geminiJudge?: { promptTokens?: number; completionTokens?: number };
+      judge?: { promptTokens?: number; completionTokens?: number };
     };
     wallClockSeconds?: { total?: number; perQuestionAverage?: number };
   } | undefined;
   if (!instrumentation) return '';
   const agent = instrumentation.tokens?.deepseekAgent;
   const ingestion = instrumentation.tokens?.concentrationIngestion;
-  const judge = instrumentation.tokens?.geminiJudge;
+  const judge = instrumentation.tokens?.judge;
   const ingestionGemini = ingestion?.byProvider?.gemini;
   const ingestionDeepSeek = ingestion?.byProvider?.deepseek;
   return [

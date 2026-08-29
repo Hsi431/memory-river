@@ -48,6 +48,6 @@
   },
   "dependencies": {
     "@memory-river/adapter-mcp": "0.2.0",
-    "@memory-river/core": "0.2.4"
+    "@memory-river/core": "0.2.5"
   }
 }

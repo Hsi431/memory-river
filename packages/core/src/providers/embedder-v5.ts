@@ -7,7 +7,11 @@
  *
  * Instruction-Aware 前輟綁定：
  * - 寫入：瑪「Summarize this memory concisely:」
- * - 讀取：「Retrieve similar memory records from Memory River knowledge base:」
+ * - 讀取：官方 `Instruct: {task}\nQuery:{query}` 模板。舊版是把一句英文直接接在
+ *   query 前面，少了 Instruct/Query 兩個標記，模型分不出指令與內容，於是整段
+ *   前綴被當成內容一起編碼；query 越短前綴佔比越大。實測 production 記憶庫：
+ *   舊格式下 query「馬路」的第一筆相關記憶排在第 111 名（單獨編碼那句前綴，
+ *   最近的是一批在講 memory-river 自己的記憶），改官方模板後排第 1。
  */
 
 import type { PluginConfig } from "../types.js";
@@ -36,6 +40,10 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return chunks;
 }
 
+// Qwen3-Embedding 官方模板的 task description。文件端不加 instruction（官方明示），
+// 所以只有 query 走這裡。
+const QUERY_TASK = "Given a search query, retrieve relevant memories that answer the query";
+
 export class Embedder {
   private ollamaUrl: string;
   private model: string;
@@ -52,13 +60,13 @@ export class Embedder {
   /**
    * 單筆查詢向量化（Instruction-Aware）
    * @param text 原始查詢文字
-   * @param mode 'store' → "Summarize this memory concisely:" | 'query' → "Retrieve similar..."
+   * @param mode 'store' → "Summarize this memory concisely:" | 'query' → 官方 Instruct/Query 模板
    * @param retries 重試次數
    */
   async embed(text: string, mode: 'store' | 'query' = 'query', retries = 3): Promise<number[]> {
-    const prefix = mode === 'store'
-      ? "Summarize this memory concisely:"
-      : "Retrieve similar memory records from Memory River knowledge base:";
+    const prompt = mode === 'store'
+      ? `Summarize this memory concisely: ${text}`
+      : `Instruct: ${QUERY_TASK}\nQuery:${text}`;
 
     await ollamaSemaphore.acquire();
     try {
@@ -69,7 +77,7 @@ export class Embedder {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: this.model,
-            prompt: `${prefix} ${text}`,
+            prompt,
           }),
         });
 

@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { runOtter } from '../agent/otter.js';
-import { createGeminiJudge, geminiJudgeAvailable } from '../harness/gemini-llm.js';
+import { createXaiJudge, xaiJudgeAvailable } from '../harness/xai-llm.js';
 import { deepseekApiKey } from '../harness/provider-keys.js';
 import type { ToolResultEvent } from '../harness/tool-llm.js';
 import {
@@ -115,7 +115,7 @@ interface QuestionDetail {
   tokens: {
     deepseekAgent: TokenUsage;
     concentrationIngestion: TokenUsageByProvider & { attribution: 'conversation-shared' };
-    geminiJudge: TokenUsage;
+    judge: TokenUsage;
   };
 }
 
@@ -263,16 +263,16 @@ export async function runConversationBenchmark(
       details: { skipped: 'deepseek-agent-key-unavailable' },
     };
   }
-  if (!geminiJudgeAvailable()) {
+  if (!xaiJudgeAvailable()) {
     return {
       dimension: dimensionName,
       metrics: {},
-      details: { skipped: 'gemini-judge-key-unavailable' },
+      details: { skipped: 'xai-judge-key-unavailable' },
     };
   }
 
   const slice = conversations.slice(0, options.limit ?? conversations.length);
-  const judge = createGeminiJudge();
+  const judge = createXaiJudge();
   const categoryCounts = new Map<string, { correct: number; total: number }>();
   const conversationDetails: Array<Record<string, unknown>> = [];
   const rehydrateModeMix: Record<string, number> = {
@@ -340,12 +340,12 @@ export async function runConversationBenchmark(
           tokens: {
             deepseekAgent: copyTokenUsage(agentUsage),
             concentrationIngestion: copyProviderUsage(ingestionUsage),
-            geminiJudge: copyTokenUsage(judgeUsage),
+            judge: copyTokenUsage(judgeUsage),
           },
           tokensPerQuestion: {
             deepseekAgent: averageTokenUsage(agentUsage, total),
             concentrationIngestion: averageTokenUsage(ingestionUsage, total),
-            geminiJudge: averageTokenUsage(judgeUsage, total),
+            judge: averageTokenUsage(judgeUsage, total),
           },
           wallClockSeconds: {
             total: totalWallClockSeconds,
@@ -605,7 +605,7 @@ export async function runConversationBenchmark(
               ...copyProviderUsage(conversationIngestionUsage),
               attribution: 'conversation-shared',
             },
-            geminiJudge: questionJudgeUsage,
+            judge: questionJudgeUsage,
           },
         });
         options.onProgress?.(buildResult());

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-type ProviderName = 'google' | 'deepseek';
+type ProviderName = 'google' | 'deepseek' | 'xai';
 
 function configuredProviderKey(provider: ProviderName): string {
   try {
@@ -26,4 +26,8 @@ export function geminiApiKey(): string {
 
 export function deepseekApiKey(): string {
   return process.env.DEEPSEEK_API_KEY ?? configuredProviderKey('deepseek');
+}
+
+export function xaiApiKey(): string {
+  return process.env.XAI_API_KEY ?? configuredProviderKey('xai');
 }

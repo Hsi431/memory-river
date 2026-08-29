@@ -721,8 +721,11 @@ export class InboxWatcher {
     // ── 重複檢查 ───────────────────────────────────────────────
     try {
       const similar = await this.store.hybridVectorSearch(item.text, 3);
-      if (similar.length > 0) {
-        const dist = similar[0].rawDistance;
+      // 只有 BM25 命中的候選 rawDistance 是 Infinity，而融合排序之後它可以排到第 0 位，
+      // 所以不能只看 similar[0]，要取第一筆有限距離的，否則重複記憶會被判成不重複而寫進去。
+      const nearest = similar.find(r => Number.isFinite(r.rawDistance));
+      if (nearest) {
+        const dist = nearest.rawDistance;
         if (dist < 0.15) {
           console.log(`[InboxWatcher] Skipping duplicate memory dist=${dist.toFixed(3)}`);
           return; // 不刪檔，由 processFile 統一處理

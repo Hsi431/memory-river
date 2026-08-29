@@ -84,6 +84,11 @@ const TRANSCRIPT_WATERMARK_TABLE = "transcript_watermark";
 const SSD_FAILURE_THRESHOLD = 5;
 const DEFAULT_SSD_RECOVERY_PROBE_INTERVAL_MS = 60_000;
 const VISIBILITY_OVERFETCH = 20;
+const POOL_VECTOR_WEIGHT = 0.5;
+const POOL_BM25_WEIGHT = 0.5;
+// 候選池選擇用的權重。刻意對半,不沿用 retriever-v4 最終排序的 0.7/0.3:只要偏向量,
+// 「只有 BM25 命中」的候選就永遠排在整個向量池之後、被 slice 砍光,字面通道等於不存在。
+// 池子的任務是別餓死任何一路,加權是排序那一層的事。
 const verifiedFtsLabels = new Set<string>();
 
 export class SchemaViolationError extends Error {
@@ -2657,7 +2662,14 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
       }
     });
 
-    const results = Array.from(fused.values());
+    const results = Array.from(fused.values())
+      .map((r) => ({
+        ...r,
+        fusedScore: (POOL_VECTOR_WEIGHT * r.rankScore) + (POOL_BM25_WEIGHT * r.bm25Score),
+      }))
+      // rankScore 是依名次重算的(1/(RRF_K+i+1)),同一份清單裡必然互異,
+      // 所以 fusedScore 與 rankScore 同時相等的情況不存在,不需要再往下比 id。
+      .sort((a, b) => (b.fusedScore - a.fusedScore) || (b.rankScore - a.rankScore));
     if (results.length === 0) return results;
 
     let existingIds: Set<string> | null = null;
@@ -2677,13 +2689,15 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
     }
 
     // PR-XR-1: 先排除 current memories 不存在的 stale candidate,再排除非 active 狀態。
-    return results.filter(r => {
+    const visible = results.filter(r => {
       if (existingIds && !existingIds.has(r.entry.id)) return false;
       try {
         const meta = this.parseMetadata(r.entry.metadata);
         return isVisibleStatus(undefined, meta?.status);
       } catch { return true; }
-    }).slice(0, limit);
+    });
+
+    return visible.slice(0, limit);
   }
 
   // ── Internal helper: embed via injected embedder ────────────────────────

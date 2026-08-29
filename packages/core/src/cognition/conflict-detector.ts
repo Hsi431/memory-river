@@ -66,6 +66,11 @@ export class ConflictDetector {
     });
 
     // Step 1: 找同 category 的相似記憶
+    // 這裡沿用檢索用的 query task description(「retrieve relevant memories that answer
+    // the query」),語意上對「找近似重複」並不精確(REVIEW20260828_MERGED M4)。刻意不改:
+    // 換掉表示法會移動寫入端的判定距離,而這條路的錯誤方向是不對稱的——漏判只是多一筆重複,
+    // 誤判會把還有效的記憶標成 deprecated。要改必須先有能分辨「該合併/不該合併」的實驗,
+    // 只看 UPDATE 率上升不算證據。候選選取本身已由 tests/conflict-detector-candidates.test.mjs 鎖住。
     const candidates = await this.store.hybridVectorSearch(newText, 10);
     const sameCategoryCandidates = candidates.filter(r => {
       if (r.entry.id === newMemoryId) return false;

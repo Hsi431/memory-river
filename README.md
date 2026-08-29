@@ -211,15 +211,31 @@ bash scripts/ci-local.sh   # what CI runs: clean-checkout simulation → build �
 
 LoCoMo is the standard long-conversation memory benchmark. We report it the way we'd want to read it: the **full 1,986-question set** (not a sampled subset), a **single run**, scored **end-to-end through a real answering agent** — not a retrieval-only number, and not a benchmark-tuned answerer. The headline covers categories 1–4 (1,539 questions); category 5 (447 questions) is reported separately below.
 
-| Category | Our judge (no partial credit) | mem0-style LLM-judge rubric |
-|:---|---:|---:|
-| 1 · multi-hop / enumeration | 34.8% | 84.8% |
-| 2 · temporal reasoning | 66.4% | 76.6% |
-| 3 · open-domain | 45.8% | 57.3% |
-| 4 · single-hop | 68.7% | 82.1% |
-| **Overall (cat 1–4)** | **60.6%** | **79.9%** |
+| Category | Our judge (no partial credit) |
+|:---|---:|
+| 1 · multi-hop / enumeration | 44.7% |
+| 2 · temporal reasoning | 67.0% |
+| 3 · open-domain | 53.1% |
+| 4 · single-hop | 76.7% |
+| **Overall (cat 1–4)** | **67.3%** |
 
-*Category 5 is adversarial — the "gold" answer is a lure and the correct behaviour is to refuse or correct, so like mem0's protocol we exclude it from the headline and treat it as a separate robustness axis (abstention accuracy 70.4% on the full run).*
+*Category 5 is adversarial — the "gold" answer is a lure and the correct behaviour is to refuse or correct, so like mem0's protocol we exclude it from the headline and treat it as a separate robustness axis (22.0% under the strict judge on this run; the abstention-accuracy framing reported previously has not been re-measured under the current judge).*
+
+**What changed since the previous published numbers.** The table above is not comparable to the 60.6% we published before, and the difference is not all progress. Two things moved at once:
+
+1. **The judge changed.** The previous numbers were scored by `gemini-2.5-flash`. Google retired the model and both of our keys now return `API_KEY_INVALID`, so the judge is now xAI `grok-4-1-fast-non-reasoning`. A judge swap moves absolute scores on its own.
+2. **Retrieval was fixed** (hybrid fusion was never actually sorted by its fused score, and the embedding query prefix was not the model's official instruction template).
+
+To separate the two, we re-ran the **full 1,986-question set twice** — once on the fixed code, once on the code immediately before the fix — with the *same* new judge and the *same* ingested memory snapshot. Only the engine differed:
+
+| | before the fix | after the fix | delta |
+|:---|---:|---:|---:|
+| Overall (cat 1–4) | 64.5% | **67.3%** | **+2.9pp** |
+| All 1,986 questions | 54.9% | 57.2% | +2.2pp |
+
+Paired McNemar on cat 1–4: 95 questions regressed, 139 improved, χ² = 7.90 (p < 0.01).
+
+So of the gap between the old 60.6% and today's 67.3%, roughly **+2.9pp is the engine getting better and the rest is the judge change**. We report it this way because a benchmark number is only worth as much as the protocol printed next to it.
 
 ### Benchmark protocol
 
@@ -235,12 +251,13 @@ LoCoMo scores are highly sensitive to the evaluation protocol. Public numbers of
 - no oracle evidence
 - no hidden benchmark-specific retry loop
 - end-to-end answers through a live agent loop
+- memory writes disabled during evaluation (`MR_OTTER_READONLY=1`), so a run can be resumed without the agent mutating the memory base mid-benchmark; both arms of the comparison above ran under the same setting
 
 This is intentionally stricter than the common leaderboard-style setup. It measures Memory River as a general memory engine embedded in a real agent, not as a benchmark-specialized answering pipeline.
 
-For comparison, we also report a mem0-style LLM-as-judge score on the exact same generated answers. This does not change the agent, the retrieved context, or the model output — only the judge rubric changes. That comparison matters because the rubric alone can move the score dramatically: in our run, the same cat1 answers score **34.8%** under the strict no-partial-credit judge and **84.8%** under the mem0-style rubric. This is why LoCoMo numbers should not be compared without the full evaluation protocol.
+We have also reported a mem0-style LLM-as-judge score on the exact same generated answers. This does not change the agent, the retrieved context, or the model output — only the judge rubric changes, and the rubric alone can move the score dramatically: on the earlier run, the same cat1 answers scored **34.8%** under the strict no-partial-credit judge and **84.8%** under the mem0-style rubric. This is why LoCoMo numbers should not be compared without the full evaluation protocol.
 
-Under the mem0-style rubric, Memory River reaches **79.9%** on cat1–4 (the rubric prompt is copied verbatim from `mem0ai/memory-benchmarks`). Judge parse failures (17 of 1,539) are counted as wrong, so 79.9% is not a figure flattered by dropping the samples that failed to parse. We treat this as a public-compatible comparison number, not the primary engineering score — the primary number remains the stricter end-to-end score.
+Under the mem0-style rubric (the prompt is copied verbatim from `mem0ai/memory-benchmarks`), Memory River reached **79.9%** on cat1–4 on the earlier Gemini-judged run, with judge parse failures (17 of 1,539) counted as wrong. **That rubric pass has not been re-run since the judge and the retrieval fix changed, so we are not restating it as a current number.** We treat it as a public-compatible comparison figure, not the primary engineering score — the primary number remains the stricter end-to-end score.
 
 The point isn't a leaderboard trick — it's to make the tradeoff visible:
 

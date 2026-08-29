@@ -66,6 +66,7 @@ import {
   type NightRecoverySource,
 } from './lifecycle/night-recovery.js';
 import { hashQuery } from './util/util-hash.js';
+import { describeMemoryTemporalProvenance } from './retrieval/temporal-provenance.js';
 
 export interface MemoryRiverEngineDeps {
   paths: {
@@ -1199,8 +1200,14 @@ export class MemoryRiverEngine {
     return { content: [{ type: 'text', text: `查無相關記憶 (queryHash=${queryHash}, searched=${searched} memories)` }] };
   }
 
-  const text = results.map((r: any) => `• ${r.entry.text}`).join('\n');
-  return { content: [{ type: 'text', text: `[相關記憶]\n${text}` }] };
+  const text = results.map((r: any) => {
+    const label = describeMemoryTemporalProvenance({
+      metadata: r.entry?.metadata,
+      createdAt: r.entry?.createdAt,
+    }).label;
+    return `• ${r.entry.text}${label ? ` ${label}` : ''}`;
+  }).join('\n');
+  return { content: [{ type: 'text', text: `[相關記憶]\n[時間標籤為候選證據，\`事件日期\` 是記憶宣稱的事件時間、\`的對話\` 是這段話被講出來的日期；沒有標籤代表時間不明。]\n${text}` }] };
 }
 
   async executeMemoryStore(params: any) {
@@ -1935,10 +1942,12 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
             } else if (sourceEntryIds.length > 0) {
               lossyPrefix = `[來源turns entryIds=${JSON.stringify(sourceEntryIds)}｜需要精確細節時可用 memory_rehydrate mode='entry_ids'] `;
             }
-            return `• ${lossyPrefix}${r.entry?.text || ''}`;
+            const label = describeMemoryTemporalProvenance({ metadata: meta, createdAt: r.entry?.createdAt }).label;
+            return `• ${lossyPrefix}${r.entry?.text || ''}${label ? ` ${label}` : ''}`;
           });
           preamble += '[相關記憶]:\n'
             + '[記憶為候選證據，未必相關或足夠；不足時優先用其 sourceEntryIds 做 entry_ids rehydrate，召回空泛時改用問題中的具體實體 keyword，確認原文支持再回答]\n'
+            + '[時間標籤為候選證據，`事件日期` 是記憶宣稱的事件時間、`的對話` 是這段話被講出來的日期；沒有標籤代表時間不明。]\n'
             + memoryPromptLines.join('\n');
           const injectedAt = Date.now();
           const hookOriginIds = new Set(searchResponse?.hookOriginIds ?? []);
