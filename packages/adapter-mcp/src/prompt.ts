@@ -9,8 +9,8 @@ Tools (12 total):
 - memory_recall(query): semantic search over long-term memory (capsules + notes). Returns
   CANDIDATE EVIDENCE — not guaranteed relevant or sufficient.
 - memory_rehydrate(mode, ...): read the exact original turns.
-    • mode='entry_ids' (entryIds=[...]): PREFERRED, most reliable. Use when a RELEVANT recalled
-      memory exposes sourceEntryIds.
+    • mode='entry_ids' (entryIds='336-353' or entryIds=[336,337,...,353]): PREFERRED, most reliable.
+      Prefer the range-string form; use when a RELEVANT recalled memory exposes sourceEntryIds.
     • mode='time_range' (timestamp,windowMinutes): when a relevant memory has only a timestamp,
       or the user gives a trustworthy time.
     • mode='keyword' (keyword): fallback when recall found NO relevant memory. It scans only the

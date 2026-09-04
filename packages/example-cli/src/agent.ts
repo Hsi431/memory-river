@@ -1,9 +1,10 @@
 import * as readline from 'node:readline';
 
-import type {
-  ContextMessage,
-  MemoryRiver,
-  RehydrateRequest,
+import {
+  parseEntryIds,
+  type ContextMessage,
+  type MemoryRiver,
+  type RehydrateRequest,
 } from '@memory-river/core';
 
 const SYSTEM_PROMPT = `You operate with a long-term memory (memory-river). It is intentionally LOSSY: recall returns
@@ -15,8 +16,8 @@ Tools:
 - memory_recall(query): semantic search over long-term memory (capsules + notes). Returns
   CANDIDATE EVIDENCE — not guaranteed relevant or sufficient.
 - memory_rehydrate(mode, ...): read the exact original turns.
-    • mode='entry_ids' (entryIds=[...]): PREFERRED, most reliable. Use when a RELEVANT recalled
-      memory exposes sourceEntryIds.
+    • mode='entry_ids' (entryIds='336-353' or entryIds=[336,337,...,353]): PREFERRED, most reliable.
+      Prefer the range-string form; use when a RELEVANT recalled memory exposes sourceEntryIds.
     • mode='time_range' (timestamp,windowMinutes): when a relevant memory has only a timestamp,
       or the user gives a trustworthy time.
     • mode='keyword' (keyword): fallback when recall found NO relevant memory. It scans only the
@@ -112,7 +113,13 @@ const TOOLS: ToolDefinition[] = [
         type: 'object',
         properties: {
           mode: { type: 'string', enum: ['entry_ids', 'keyword', 'time_range'] },
-          entryIds: { type: 'array', items: { type: 'integer' } },
+          entryIds: {
+            anyOf: [
+              { type: 'string', description: "Recommended range form, e.g. '336-353'" },
+              { type: 'array', items: { type: 'integer' } },
+            ],
+            description: 'Entry IDs as a range string or an integer array.',
+          },
           keyword: { type: 'string' },
           timestamp: { type: 'string' },
           windowMinutes: { type: 'number', minimum: 1, default: 60 },
@@ -332,9 +339,11 @@ async function executeTool(
     const limit = finiteNumber(args.limit, 10);
     let request: RehydrateRequest;
     if (args.mode === 'entry_ids') {
-      const entryIds = Array.isArray(args.entryIds)
-        ? args.entryIds.filter((id): id is number => typeof id === 'number' && Number.isInteger(id))
-        : [];
+      const entryIds = typeof args.entryIds === 'string'
+        ? parseEntryIds(args.entryIds)
+        : Array.isArray(args.entryIds)
+          ? args.entryIds.filter((id): id is number => typeof id === 'number' && Number.isInteger(id))
+          : [];
       request = {
         mode: 'entry_ids',
         sessionKey: typeof args.sessionKey === 'string' ? args.sessionKey : sessionKey,

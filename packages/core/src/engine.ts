@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
 import { MemoryStore } from './store/store-v4.js';
 import { Embedder } from './providers/embedder-v5.js';
@@ -67,6 +68,7 @@ import {
 } from './lifecycle/night-recovery.js';
 import { hashQuery } from './util/util-hash.js';
 import { describeMemoryTemporalProvenance } from './retrieval/temporal-provenance.js';
+import { annotateVersionRelations, groupVersionRelations, type VersionRelationGroup } from './retrieval/version-relations.js';
 
 export interface MemoryRiverEngineDeps {
   paths: {
@@ -105,6 +107,33 @@ const NIGHT_HEALTH_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const NIGHT_STARTUP_RECOVERY_DELAY_MS = 5000;
 const PENDING_ATTRIBUTION_MAX_KEYS = 100;
 const PENDING_ATTRIBUTION_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_RERANK_OVERFETCH = 3;
+const RERANK_ENV = 'MR_CROSS_ENCODER_RERANK';
+const DEFAULT_AUTORECALL_OVERFETCH = 3;
+const AUTORECALL_OVERFETCH_ENV = 'MR_AUTORECALL_OVERFETCH';
+// Set to 0 to restore one-line-per-retrieved-memory rendering; enabled by default.
+const AUTORECALL_VERSION_MERGE_ENV = 'MR_AUTORECALL_VERSION_MERGE';
+
+function formatEntryIds(entryIds: number[]): string {
+  if (entryIds.length === 0) return '';
+  if (!entryIds.every(Number.isInteger)) return JSON.stringify(entryIds);
+
+  const sorted = [...new Set(entryIds)].sort((left, right) => left - right);
+  const ranges: string[] = [];
+  let start = sorted[0];
+  let end = sorted[0];
+  for (const id of sorted.slice(1)) {
+    if (id === end + 1) {
+      end = id;
+      continue;
+    }
+    ranges.push(start === end ? String(start) : `${start}-${end}`);
+    start = id;
+    end = id;
+  }
+  ranges.push(start === end ? String(start) : `${start}-${end}`);
+  return ranges.join(',');
+}
 
 export class MemoryRiverEngine {
   constructor(private config: Required<PluginConfig>, private deps: MemoryRiverEngineDeps) {
@@ -167,9 +196,10 @@ export class MemoryRiverEngine {
         codexReasoningEffort: config.concentration?.codexReasoningEffort,
         codexWorkdir: config.concentration?.codexWorkdir,
         codexTimeoutMs: config.concentration?.codexTimeoutMs,
-        maxTokens: config.concentration?.maxTokens ?? 8192,
+        maxTokens: config.concentration?.maxTokens ?? 32768,
         deepseekApiKey: config.concentration?.deepseekApiKey || deps.deepseekApiKey,
         deepseekModel: config.concentration?.deepseekModel || 'deepseek-v4-flash',
+        timezone: config.concentration?.timezone,
         statsStore: store,
         transcriptArchive: deps.transcriptArchive as any,
         sessionSummaryDir: deps.paths.sessionSummaryDir,
@@ -1183,8 +1213,12 @@ export class MemoryRiverEngine {
     return this.initFailedResult(this.pluginInitError ?? new Error('retriever unavailable after initialization'));
   }
 
-  const searchResponse = await this.retrieverRef.hybridSearch(params.query, params.limit || 5);
-  const results = searchResponse.results;
+  const requestedLimit = params.limit || 5;
+  const searchResponse = await this.retrieverRef.hybridSearch(
+    params.query,
+    this.rerankCandidateLimit(requestedLimit),
+  );
+  const results = await this.rerankResults(params.query, searchResponse.results, requestedLimit);
   if (results.length === 0) {
     const queryHash = searchResponse.queryHash || hashQuery(String(params.query ?? ''));
     let searched = 'unknown';
@@ -1270,7 +1304,12 @@ export class MemoryRiverEngine {
     if (!this.memoryStoreRef) {
       throw this.pluginInitError ?? new Error('memory store unavailable after initialization');
     }
-    return this.memoryStoreRef.hybridVectorSearch(query, limit);
+    const candidates = await this.memoryStoreRef.hybridVectorSearch(
+      query,
+      this.rerankCandidateLimit(limit),
+    );
+    const results = await this.rerankResults(query, candidates, limit);
+    return annotateVersionRelations(results);
   }
 
   // ⚠️ DEPRECATED / DORMANT (2026-06-19): graph-enumerate is superseded by memory_recall
@@ -1325,7 +1364,70 @@ export class MemoryRiverEngine {
       throw this.pluginInitError ?? new Error('retriever unavailable after initialization');
     }
     // TODO(read-only): hybridSearchWithoutBoost still records recall metadata.
-    return (await this.retrieverRef.hybridSearchWithoutBoost(query, limit)).results;
+    const candidates = (await this.retrieverRef.hybridSearchWithoutBoost(
+      query,
+      this.rerankCandidateLimit(limit),
+    )).results;
+    return this.rerankResults(query, candidates, limit);
+  }
+
+  private isRerankEnabled(): boolean {
+    const envValue = process.env[RERANK_ENV];
+    if (envValue === '0') return false;
+    if (envValue === '1') return true;
+    return this.config.retrieval?.rerank?.enabled === true;
+  }
+
+  private rerankCandidateLimit(limit: number): number {
+    if (!this.isRerankEnabled()) return limit;
+    const configured = Number(this.config.retrieval?.rerank?.overfetch);
+    const overfetch = Number.isFinite(configured) && configured >= 1
+      ? Math.floor(configured)
+      : DEFAULT_RERANK_OVERFETCH;
+    return limit * overfetch;
+  }
+
+  private async rerankResults(
+    query: string,
+    candidates: MemorySearchResult[],
+    limit: number,
+  ): Promise<MemorySearchResult[]> {
+    if (!this.isRerankEnabled() || candidates.length === 0) return candidates;
+
+    const original = candidates.slice();
+    const reranker = this.config.retrieval?.reranker;
+    if (!reranker) {
+      this.rerankWarning('no reranker was injected');
+      return original.slice(0, limit);
+    }
+
+    const started = performance.now();
+    try {
+      const reranked = await reranker.rerank(query, original.slice());
+      const returned = reranked.slice(0, limit);
+      const beforeTop = original.slice(0, 3).map(result => result.entry.id);
+      const afterTop = returned.slice(0, 3).map(result => result.entry.id);
+      const topThreeChanged = beforeTop.length !== afterTop.length
+        || beforeTop.some((id, index) => id !== afterTop[index]);
+      const rerankMs = performance.now() - started;
+      this.rerankInfo(
+        `[memory-river] cross-encoder rerank candidates=${original.length} `
+        + `returned=${returned.length} rerankMs=${Math.round(rerankMs)} `
+        + `top3Changed=${topThreeChanged}`,
+      );
+      return returned;
+    } catch (err) {
+      this.rerankWarning(`rerank failed; returning original order: ${err instanceof Error ? err.message : String(err)}`);
+      return original.slice(0, limit);
+    }
+  }
+
+  private rerankInfo(message: string): void {
+    (this.deps.logger ?? console).info(message);
+  }
+
+  private rerankWarning(message: string): void {
+    (this.deps.logger ?? console).warn(`[memory-river] cross-encoder rerank warning: ${message}`);
   }
 
   private async withSkillLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -1890,14 +1992,56 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
           // gate trims to however many actually pass, so irrelevant turns stay lean.
           return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 5;
         })();
+        const autoRecallOverfetch = (() => {
+          const raw = Number(process.env[AUTORECALL_OVERFETCH_ENV]);
+          return Number.isFinite(raw) && raw >= 0
+            ? Math.floor(raw)
+            : DEFAULT_AUTORECALL_OVERFETCH;
+        })();
+        const mergeVersions = process.env[AUTORECALL_VERSION_MERGE_ENV] !== '0';
+        const autoRecallFetchK = autoRecallK + (mergeVersions ? autoRecallOverfetch : 0);
         try {
-          searchResponse = await this.retrieverRef.hybridSearch(userText, autoRecallK);
+          searchResponse = await this.retrieverRef.hybridSearch(
+            userText,
+            this.rerankCandidateLimit(autoRecallFetchK),
+          );
         } catch (primaryErr: any) {
           console.warn('[memory-river] autoRecall primary search failed, fallback to no-boost search:', primaryErr?.message);
           gwmRecallUsedFallback = true;
-          searchResponse = await this.retrieverRef.hybridSearchWithoutBoost(userText, autoRecallK);
+          searchResponse = await this.retrieverRef.hybridSearchWithoutBoost(
+            userText,
+            this.rerankCandidateLimit(autoRecallFetchK),
+          );
         }
-        results = searchResponse.results;
+        const recalledResults = annotateVersionRelations(
+          await this.rerankResults(userText, searchResponse.results, autoRecallFetchK),
+        );
+        const renderItems: VersionRelationGroup[] = [];
+        if (mergeVersions) {
+          const versionGroups = groupVersionRelations(recalledResults);
+          const groupByMemberId = new Map<string, VersionRelationGroup>();
+          for (const group of versionGroups) {
+            for (const member of [group.primary, ...group.history]) {
+              groupByMemberId.set(member.entry.id, group);
+            }
+          }
+          const consumedIds = new Set<string>();
+          for (const recalled of recalledResults) {
+            if (consumedIds.has(recalled.entry.id)) continue;
+            const group = groupByMemberId.get(recalled.entry.id);
+            if (group) {
+              renderItems.push(group);
+              [group.primary, ...group.history].forEach(member => consumedIds.add(member.entry.id));
+            } else {
+              renderItems.push({ primary: recalled, history: [] });
+              consumedIds.add(recalled.entry.id);
+            }
+            if (renderItems.length >= autoRecallK) break;
+          }
+        } else {
+          renderItems.push(...recalledResults.slice(0, autoRecallK).map(primary => ({ primary, history: [] })));
+        }
+        results = renderItems.map(item => item.primary);
         onAutoRecallResults?.({ query: userText, results });
         let skills: SkillIndexEntry[] = [];
         try {
@@ -1916,38 +2060,55 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
             + '\n\n';
         }
         if (results?.length > 0) {
-          const memoryPromptLines = results.map((r: any) => {
+          const renderMemoryDetails = (r: any, includeLossyPrefix: boolean, includeVersionLabel: boolean): string => {
             const rawMeta = r.entry?.metadata;
             const meta = typeof rawMeta === 'string'
               ? (() => { try { return JSON.parse(rawMeta); } catch { return {}; } })()
               : rawMeta || {};
-            const isLossy = (meta.confidence != null && meta.confidence < 0.6)
+            // MR_FORCE_LOSSY_HINT=1：無條件對每條記憶掛強提示(⚠️ + 現成 entryIds)。
+            // 實驗用途 —— 現行判準在真實資料上從未觸發(confidence 中位數 0.9 vs 門檻 0.6、
+            // compressionRatio 中位數 0.97 vs 門檻 15),等於強提示是死碼。
+            const isLossy = process.env.MR_FORCE_LOSSY_HINT === '1'
+                         || (meta.confidence != null && meta.confidence < 0.6)
                          || (meta.compressionRatio != null && meta.compressionRatio > 15);
             const sourceEntryIds = Array.isArray(meta.sourceEntryIds)
               ? meta.sourceEntryIds.filter((id: unknown) => typeof id === 'number' && Number.isFinite(id))
               : [];
-            let lossyPrefix = '';
-            if (isLossy) {
+            let sourcePrefix = '';
+            if (includeLossyPrefix && isLossy) {
               const conf = meta.confidence != null ? meta.confidence.toFixed(2) : '?';
               const firstAt = meta.firstTimestamp ?? '';
               const lastAt  = meta.lastTimestamp  ?? '';
               if (sourceEntryIds.length > 0) {
-                lossyPrefix = `⚠️ [lossy, confidence=${conf}, firstAt=${firstAt}, lastAt=${lastAt}, call memory_rehydrate with mode='entry_ids' + entryIds=${JSON.stringify(sourceEntryIds)}] `;
+                sourcePrefix = `⚠️ [lossy, confidence=${conf}, firstAt=${firstAt}, lastAt=${lastAt}, call memory_rehydrate with mode='entry_ids' + entryIds=${formatEntryIds(sourceEntryIds)}] `;
               } else {
                 const windowMinutes = (meta.firstTimestamp && meta.lastTimestamp)
                   ? Math.ceil((meta.lastTimestamp - meta.firstTimestamp) / 60000) + 30
                   : 60;
-                lossyPrefix = `⚠️ [lossy, confidence=${conf}, firstAt=${firstAt}, lastAt=${lastAt}, call memory_rehydrate with mode='time_range' + timestamp=${firstAt} + windowMinutes=${windowMinutes}] `;
+                sourcePrefix = `⚠️ [lossy, confidence=${conf}, firstAt=${firstAt}, lastAt=${lastAt}, call memory_rehydrate with mode='time_range' + timestamp=${firstAt} + windowMinutes=${windowMinutes}] `;
               }
             } else if (sourceEntryIds.length > 0) {
-              lossyPrefix = `[來源turns entryIds=${JSON.stringify(sourceEntryIds)}｜需要精確細節時可用 memory_rehydrate mode='entry_ids'] `;
+              sourcePrefix = `[來源turns ${formatEntryIds(sourceEntryIds)}] `;
             }
             const label = describeMemoryTemporalProvenance({ metadata: meta, createdAt: r.entry?.createdAt }).label;
-            return `• ${lossyPrefix}${r.entry?.text || ''}${label ? ` ${label}` : ''}`;
+            const versionLabel = includeVersionLabel && r.versionRelation?.isOlder
+              ? '〔較舊版本；本次結果中有更新的一筆〕'
+              : '';
+            return `${sourcePrefix}${r.entry?.text || ''}${label ? ` ${label}` : ''}${versionLabel ? ` ${versionLabel}` : ''}`;
+          };
+          const memoryPromptLines = renderItems.map(({ primary, history }) => {
+            const lines = [`• ${renderMemoryDetails(primary, true, true)}`];
+            const visibleHistory = history.slice(0, 2);
+            lines.push(...visibleHistory.map(item => `    ↳ 更早:${renderMemoryDetails(item, false, false)}`));
+            const omittedHistoryCount = history.length - visibleHistory.length;
+            if (omittedHistoryCount > 0) {
+              lines.push(`    ↳ 另有 ${omittedHistoryCount} 筆更早的版本`);
+            }
+            return lines.join('\n');
           });
           preamble += '[相關記憶]:\n'
-            + '[記憶為候選證據，未必相關或足夠；不足時優先用其 sourceEntryIds 做 entry_ids rehydrate，召回空泛時改用問題中的具體實體 keyword，確認原文支持再回答]\n'
-            + '[時間標籤為候選證據，`事件日期` 是記憶宣稱的事件時間、`的對話` 是這段話被講出來的日期；沒有標籤代表時間不明。]\n'
+            + '[記憶為候選證據，未必相關或足夠；需要精確細節時優先用附帶的 sourceEntryIds 呼叫 memory_rehydrate mode=\'entry_ids\'（例如 entryIds=\'336-353\'）；召回空泛時改用問題中的具體實體 keyword，確認原文支持再回答]\n'
+            + '[時間標籤為候選證據：`事件日期` 是記憶宣稱的事件時間、`的對話` 是這段話被講出來的日期；沒有標籤代表時間不明。版本標籤表示這筆是同組中的較舊版本，且更新版也在本次結果中；沒有標籤代表未判定有較新版本。]\n'
             + memoryPromptLines.join('\n');
           const injectedAt = Date.now();
           const hookOriginIds = new Set(searchResponse?.hookOriginIds ?? []);
@@ -2423,7 +2584,10 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
     }
 
     // 執行濃縮（dryRun=false, force=true）
-    const result = await this.activeConcentrator.concentrate(msgs, false, true, { sessionIdentity: identity });
+    const result = await this.activeConcentrator.concentrate(msgs, false, true, {
+      sessionIdentity: identity,
+      exhaustive: params.exhaustive === true,
+    });
 
     if (!result?.wasConcentrated || !result.messages) {
       console.warn('[memory-river] compact: compaction failed or returned no result');

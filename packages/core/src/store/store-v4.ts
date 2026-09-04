@@ -1860,6 +1860,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
       metadata: row.metadata as string || '{}',
       createdAt: Number(row.createdAt) || Date.now(),
       updatedAt: Number(row.updatedAt) || Date.now(),
+      slotKey: row.slotKey as string | undefined,
     };
   }
 
@@ -1915,6 +1916,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
         metadata: row.metadata as string || '{}',
         createdAt: Number(row.createdAt) || Date.now(),
         updatedAt: Number(row.updatedAt) || Date.now(),
+        slotKey: row.slotKey as string | undefined,
       });
     }
 
@@ -2541,6 +2543,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
           metadata: row.metadata as string || '{}',
           createdAt: Number(row.createdAt) || Date.now(),
           updatedAt: Number(row.updatedAt) || Date.now(),
+          slotKey: row.slotKey as string | undefined,
         },
         vectorScore: 1 / (1 + (row._distance ?? 0)),
         rankScore: 1 / (1 + (row._distance ?? 0)),
@@ -2593,6 +2596,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
           metadata: row.metadata as string || '{}',
           createdAt: Number(row.createdAt) || Date.now(),
           updatedAt: Number(row.updatedAt) || Date.now(),
+          slotKey: row.slotKey as string | undefined,
         },
         vectorScore: 0,
         rankScore: 0,

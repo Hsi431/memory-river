@@ -33,6 +33,30 @@ const BACKGROUND_WRITE_QUEUE_LIMIT = 100;
 // collapse — NOT to resolve near-misses (dense embedding can't separate
 // near-equivalents; that's a separate concern). So we sit at the recall-safe end.
 // See docs/internal/CRAG_DISTRACTOR_FINDINGS_2026-06-14.md.
+//
+// 2026-08-29 重新校準(只動 DIST_NO)。0b579a9 把 query 表示法換成 Qwen3 官方
+// Instruct/Query 模板之後,距離尺度被拉開了:真證據的**中位數幾乎沒動**(0.510 → 0.516),
+// 但 **p90 從 0.646 跑到 0.799**。DIST_NO 原本的規則就是「訂在真證據 p90 上面一點」,
+// 尺一變它就掉到第 66 百分位,實測會丟掉 34% 的真證據 —— 所以跟著 p90 移到 0.80,
+// 恢復原本「只砍最遠那約 10%」的意圖。DIST_YES 與 VIP 量過**沒有漂**(0.55 仍在證據中位數
+// 上方、0.30 仍攔到最近的約 8-9%),因此不動。
+// ⚠️ 同一次量測也顯示:真證據與非證據的距離分布幾乎完全重疊(0.65 時丟掉 34.2% 證據 vs
+// 37.8% 非證據),所以放寬 DIST_NO 的效果是**少誤殺**,不是「濾得更準」。別期待它擋雜訊。
+// 量測方法:走 harness 既有的 evidence→entryId 對照(`locomo-provenance.ts`),
+// 對 locomo 快照離線算餘弦距離,只花 embedding。同一支腳本量舊表示法得到 median 0.510,
+// 與上面那行 2026-06-14 記的 0.506 吻合,可信度由此而來。樣本:1986 題中有 136 題的證據
+// 能對到實際存在的記憶(521 個證據-記憶配對)—— 偏小,方向可信但精度別當鐵板。
+// ☠️ 離線量距離時注意:`MemorySearchResult.rawDistance` 是單位向量的 L2 平方
+// = 2×(1−cos),**不是**這裡用的餘弦距離,差兩倍。gate 自己重算 `cosineDistance`,沒有這個問題。
+//
+// 2026-08-30 端到端驗證:**0.80 被否決,退回 0.65。** 全量 LoCoMo 單趟(1986 題,同快照
+// 同裁判,對照 8/28 的 0.65 那趟)cat1–4 67.34% → 65.13%(−2.21pp),全量 57.15% → 54.73%
+// (−2.42pp),**五類無一改善**;配對 McNemar cat1–4 χ²=5.00(p<0.05)、全量 χ²=7.27(p<0.01),
+// 是顯著退步。「至少一次 recall 回零筆」的題目從 51.4% 降到 35.3%,證實「少誤殺」是對的 ——
+// 但多留下來的東西不是答案,是雜訊,分數反而被拖下去。
+// ⇒ 上面那套「訂在真證據 p90」的推理在這個尺上不成立。真證據與非證據分布重疊時,
+//   離線的距離百分位量不出門檻該訂在哪,只有端到端跑得出來。以後別再只憑離線分布移這個常數。
+// 產物:~/locomo-crag-20260830/(0.80)vs ~/locomo-gate-20260828/locomo-new.json(0.65)。
 const CRAG_VIP_DIST = 0.30;  // <= → VIP auto-keep (very similar)
 const CRAG_DIST_YES = 0.55;  // <= → keep
 const CRAG_DIST_NO = 0.65;   // >= → drop; between DIST_YES and DIST_NO → partial
@@ -459,61 +483,7 @@ export class Retriever {
       .sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0))
       .slice(0, poolSize);
 
-    // ── Structured Slot 去重：同 slotKey 只留最新 active 版本 ─
-    // Phase 1：slotKey 相同的多個版本，優先回傳 status=active 且 createdAt 最新者
-    const slotVersionMap = new Map<string, { idx: number; createdAt: number; isActive: boolean }>();
-    const dedupedResults: any[] = [];
-
-    for (let i = 0; i < reRanked.length; i++) {
-      const r = reRanked[i] as any;
-      const slotKey = r.entry.slotKey as string | undefined;
-
-      if (!slotKey) {
-        // 無 slotKey → 直接保留
-        dedupedResults.push(r);
-        continue;
-      }
-
-      // 嘗試從 metadata 取 status（entry.status 可能未定義）
-      let status = 'active';
-      let createdAt = r.entry.createdAt || 0;
-      try {
-        const meta = typeof r.entry.metadata === 'string'
-          ? JSON.parse(r.entry.metadata)
-          : (r.entry.metadata || {});
-        status = meta?.status || 'active';
-      } catch { /* ignore */ }
-
-      const isActive = status === 'active';
-      const existing = slotVersionMap.get(slotKey);
-
-      if (!existing) {
-        if (isActive) {
-          // 第一個版本是 active → 直接加入結果
-          const idx = dedupedResults.length;
-          slotVersionMap.set(slotKey, { idx, createdAt, isActive: true });
-          dedupedResults.push(r);
-        } else {
-          // 第一個版本是 inactive → 暫存但不加入結果（idx = -1 表示未入列）
-          slotVersionMap.set(slotKey, { idx: -1, createdAt, isActive: false });
-        }
-      } else if (isActive && createdAt > existing.createdAt) {
-        // 更新的 active 版本
-        if (existing.idx >= 0 && existing.idx < dedupedResults.length) {
-          dedupedResults[existing.idx] = r; // 替換已存在的版本
-        } else {
-          // 之前沒入列（inactive）→ 現在加入
-          const newIdx = dedupedResults.length;
-          slotVersionMap.set(slotKey, { idx: newIdx, createdAt, isActive: true });
-          dedupedResults.push(r);
-          continue;
-        }
-        slotVersionMap.set(slotKey, { idx: existing.idx, createdAt, isActive: true });
-      }
-      // else: 非 active 或更舊的 active → 跳過
-    }
-
-    const finalResults = dedupedResults;
+    const finalResults = reRanked;
 
     // ── 記憶鉤子觸發（CRAG 之前，讓 hook 記憶也經過品質審核） ──
     // hookKeywordMap: EVERY triggered hook → drives reportHookOutcome so the engine's
@@ -523,7 +493,7 @@ export class Retriever {
     //   hook gate. A memory already retrieved on merit must NOT be subjected to it.
     const hookKeywordMap = new Map<string, string>();
     const hookInjectedIds = new Set<string>();
-    const cragInput: any[] = [...finalResults]; // 以 finalResults 為基底（已做 slot 去重）
+    const cragInput: any[] = [...finalResults];
     try {
       const hookResult = await this.triggerHooks(query);
       if (hookResult.triggered) {

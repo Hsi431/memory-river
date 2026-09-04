@@ -170,7 +170,10 @@ test('buildComparableTranscriptCandidates keeps normal rows including orphan pai
 
   assert.deepEqual(
     candidates.map((entry) => ({ entryId: entry.entryId, user: entry.user, assistant: entry.assistant })),
-    [{ entryId: 11, user: '一般對話', assistant: '有回覆' }]
+    [
+      { entryId: 11, user: '一般對話', assistant: '有回覆' },
+      { entryId: 12, user: '先做調查跟建議 先不動code', assistant: '' },
+    ]
   );
 });
 
@@ -288,7 +291,7 @@ test('buildComparableTranscriptCandidates keeps non-orphan rows unchanged', () =
   ]);
 });
 
-test('buildComparableTranscriptPairs drops trailing summarize-only user without assistant', async () => {
+test('buildComparableTranscriptPairs keeps trailing summarize-only user as an orphan pair', async () => {
   const { buildComparableTranscriptPairs } = await import('../dist/distill/concentrator-adapter.js');
 
   const pairs = buildComparableTranscriptPairs([
@@ -302,6 +305,11 @@ test('buildComparableTranscriptPairs drops trailing summarize-only user without 
       user: '第一句',
       assistant: '第一句回覆',
       timestamp: 1710000010000,
+    },
+    {
+      user: '第二句只有 user',
+      assistant: '',
+      timestamp: 1710000010200,
     },
   ]);
 });

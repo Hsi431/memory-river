@@ -3,11 +3,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 import { createToolExecutor } from '@memory-river/adapter-mcp';
-import type {
-  ContextMessage,
-  MemoryRiver,
-  RehydrateRequest,
-  SessionHint,
+import {
+  parseEntryIds,
+  type ContextMessage,
+  type MemoryRiver,
+  type RehydrateRequest,
+  type SessionHint,
 } from '@memory-river/core';
 
 const { version: SERVICE_VERSION } = JSON.parse(
@@ -144,7 +145,9 @@ async function routeRequest(
       const requestBody: RehydrateRequest = {
         mode: 'entry_ids',
         sessionKey: typeof body.sessionKey === 'string' ? body.sessionKey : options.sessionKey,
-        entryIds: Array.isArray(body.entryIds) ? body.entryIds.filter(Number.isInteger) : [],
+        entryIds: typeof body.entryIds === 'string'
+          ? parseEntryIds(body.entryIds)
+          : Array.isArray(body.entryIds) ? body.entryIds.filter(Number.isInteger) : [],
         bleed: numberOrDefault(body.bleed, 2),
         limit: numberOrDefault(body.limit, 10),
       };
@@ -208,4 +211,3 @@ export async function listenMemoryRiverHttpService(
     }),
   };
 }
-

@@ -136,6 +136,45 @@ test('store then recall returns the memory and a non-empty block', async () => {
   });
 });
 
+test('rehydrate expands range strings like the existing integer-array input', async () => {
+  const calls = [];
+  const river = {
+    async rehydrate(request) {
+      calls.push(request);
+      return request.entryIds.map(entryId => ({ entryId }));
+    },
+  };
+  const server = createMemoryRiverHttpServer({
+    river,
+    dataDir: '/tmp/memory-river-service-entry-ids-test',
+    sessionKey: 'service-entry-ids-test',
+  });
+  const ids = Array.from({ length: 18 }, (_, index) => 336 + index);
+
+  const fromRange = await requestJson(server, 'POST', '/rehydrate', { entryIds: '336-353' });
+  const fromArray = await requestJson(server, 'POST', '/rehydrate', { entryIds: ids });
+  const fromMultipleRanges = await requestJson(server, 'POST', '/rehydrate', {
+    entryIds: '336-340,348-353',
+  });
+
+  assert.deepEqual(fromRange.body, fromArray.body);
+  assert.deepEqual(fromMultipleRanges.body.map(entry => entry.entryId), [
+    336, 337, 338, 339, 340, 348, 349, 350, 351, 352, 353,
+  ]);
+  assert.deepEqual(calls.map(call => call.entryIds), [ids, ids, [
+    336, 337, 338, 339, 340, 348, 349, 350, 351, 352, 353,
+  ]]);
+
+  for (const value of ['', 'abc', '5-3']) {
+    let result;
+    await assert.doesNotReject(async () => {
+      result = await requestJson(server, 'POST', '/rehydrate', { entryIds: value });
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, []);
+  }
+});
+
 async function waitFor(predicate, label, timeoutMs = 10000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {

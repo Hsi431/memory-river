@@ -137,11 +137,16 @@ function chooseCanonical(
  * 從單一 payload 解析 sessionIdentity。
  * 同時拿 sessionKey 與 sessionId 兩個原始欄位（如果存在），以便磁碟讀寫拼檔名。
  */
-export function resolveSessionIdentity(payload: unknown): SessionIdentity {
+export function resolveSessionIdentity(
+  payload: unknown,
+  opts?: { silentFallback?: boolean },
+): SessionIdentity {
   const raw = extractRawFields(payload);
   const { canonicalKey, source, isFallback } = chooseCanonical(raw);
 
-  if (isFallback) {
+  // silentFallback：呼叫端自己有保底方案、fallback 是預期路徑而非異常,
+  // 不要通知 observer(否則會被記成 concentrator_stats 的 failure)。
+  if (isFallback && !opts?.silentFallback) {
     notifyFallback(payload, 'resolveSessionIdentity');
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@memory-river/core",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "description": "Framework-neutral long-term memory engine for Node.js agents.",
   "private": false,
   "license": "Apache-2.0",

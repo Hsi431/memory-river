@@ -1,5 +1,8 @@
+import * as fs from 'node:fs';
+
 import {
   loadLocomo,
+  locomoDatasetPath,
   type LocomoConversation,
   type LocomoQa,
 } from '../harness/locomo.js';
@@ -38,13 +41,58 @@ export function isAbstention(answer: string): boolean {
 
 // ─── Locomo-specific grader: category 5 = unanswerable ───────────────────────
 
+type Cat5Qa = ConvQa & { adversarialAnswer?: string; adversarial_answer?: string };
+
+function cat5QaKey(sampleId: string, question: string): string {
+  return `${sampleId}\u0000${question}`;
+}
+
+function loadCat5AdversarialAnswers(): Map<string, string> {
+  const raw = JSON.parse(fs.readFileSync(locomoDatasetPath(), 'utf8')) as Array<{
+    sample_id?: unknown;
+    qa?: Array<{
+      question?: unknown;
+      category?: unknown;
+      adversarial_answer?: unknown;
+    }>;
+  }>;
+  const answers = new Map<string, string>();
+  for (const sample of raw) {
+    const sampleId = String(sample.sample_id ?? '');
+    for (const qa of sample.qa ?? []) {
+      if (Number(qa.category) !== 5) continue;
+      if (typeof qa.adversarial_answer !== 'string' && typeof qa.adversarial_answer !== 'number') continue;
+      answers.set(cat5QaKey(sampleId, String(qa.question ?? '')), String(qa.adversarial_answer));
+    }
+  }
+  return answers;
+}
+
 export async function gradeLocomoAnswer(
   judge: { generate(prompt: string): Promise<string> },
-  qa: ConvQa,
+  qa: Cat5Qa,
   candidate: string,
 ): Promise<GradeResult> {
   if (qa.category === '5') {
-    return { correct: isAbstention(candidate), parseFailure: false };
+    const adversarialAnswer = qa.adversarialAnswer ?? qa.adversarial_answer ?? '';
+    const verdict = (await judge.generate(
+      `Grade this LoCoMo category-5 adversarial question.\n` +
+      `The question contains a false premise or attribution. The adversarial answer below is bait, not gold.\n` +
+      `Question: ${qa.question}\n` +
+      `Adversarial answer (bait, not gold): ${String(adversarialAnswer)}\n` +
+      `Candidate answer: ${candidate}\n\n` +
+      `Reply YES only if the candidate explicitly abstains because the premise is unsupported, or correctly ` +
+      `corrects the false premise or attribution. Reply NO if it accepts, repeats, or merely paraphrases ` +
+      `the bait, or if it is unrelated. Merely mentioning a different name is not enough: a correction must ` +
+      `explicitly reject the false attribution. Reply with exactly YES or NO.`,
+    )).trim().toUpperCase();
+    const normalizeBaitAnswer = (value: string): string => value.trim().toLowerCase().replace(/[\p{P}\p{S}]+/gu, '').replace(/\s+/g, ' ');
+    if (normalizeBaitAnswer(candidate) === normalizeBaitAnswer(String(adversarialAnswer))) {
+      return { correct: false, parseFailure: false };
+    }
+    if (verdict === 'YES') return { correct: true, parseFailure: false };
+    if (verdict === 'NO') return { correct: false, parseFailure: false };
+    return { correct: false, parseFailure: true };
   }
   const verdict = (await judge.generate(
     `Grade whether the candidate answer is correct.\n` +
@@ -140,7 +188,10 @@ export function sampleLocomo(
   }).filter(conversation => conversation.qa.length > 0);
 }
 
-function toConvSet(conversation: ReturnType<typeof loadLocomo>[number]): ConvSet {
+function toConvSet(
+  conversation: ReturnType<typeof loadLocomo>[number],
+  adversarialAnswers: Map<string, string>,
+): ConvSet {
   return {
     sampleId: conversation.sampleId,
     sessions: conversation.sessions.map(session => ({
@@ -149,20 +200,32 @@ function toConvSet(conversation: ReturnType<typeof loadLocomo>[number]): ConvSet
       turns: session.turns,
       messages: session.messages,
     })),
-    qa: conversation.qa.map((qa: LocomoQa): ConvQa => ({
-      question: qa.question,
-      answer: qa.answer,
-      evidence: qa.evidence,
-      category: String(qa.category),
-      sourceIndex: qa.sourceIndex,
-    })),
+    qa: conversation.qa.map((qa: LocomoQa): ConvQa => {
+      const base: ConvQa = {
+        question: qa.question,
+        answer: qa.answer,
+        evidence: qa.evidence,
+        category: String(qa.category),
+        sourceIndex: qa.sourceIndex,
+      };
+      if (qa.category !== 5) return base;
+      return {
+        ...base,
+        adversarialAnswer: adversarialAnswers.get(cat5QaKey(conversation.sampleId, qa.question)) ?? '',
+      } as Cat5Qa;
+    }),
   };
 }
 
 export async function runLocomoBenchmark(
   options: BenchmarkOptions = {},
 ): Promise<BenchmarkResult> {
-  const loaded = loadLocomo().slice(0, options.limit ?? undefined);
+  // MR_LOCOMO_CONVERSATIONS=conv-47,conv-50 限定只跑指定的 conversation
+  // (--limit 只能取前 N 個,無法挑中間的)。空值或未設 = 全部。
+  const only = (process.env.MR_LOCOMO_CONVERSATIONS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const loaded = loadLocomo()
+    .filter(conversation => only.length === 0 || only.includes(conversation.sampleId))
+    .slice(0, options.limit ?? undefined);
   // Filter to the requested category BEFORE sampling. sampleLocomo balances
   // across categories, so filtering afterwards (in the conversation runner)
   // would shrink an already category-balanced sample to a tiny per-category
@@ -177,8 +240,14 @@ export async function runLocomoBenchmark(
         }))
         .filter(conversation => conversation.qa.length > 0);
   const sampled = sampleLocomo(conversations, options.sample ?? 20, options.seed ?? 1);
+  const adversarialAnswers = loadCat5AdversarialAnswers();
+  // MR_LOCOMO_MAX_SESSIONS=2 只吃每個 conversation 的前 N 個 session(排空煙霧測試用,
+  // 不是完整評測 —— 被砍掉的 session 裡的證據就答不出來)。未設或 0 = 全部。
+  const maxSessions = Number(process.env.MR_LOCOMO_MAX_SESSIONS ?? 0);
   return runConversationBenchmark(
-    sampled.map(toConvSet),
+    sampled.map(conversation => toConvSet(conversation, adversarialAnswers)).map(conversation => maxSessions > 0
+      ? { ...conversation, sessions: conversation.sessions.slice(0, maxSessions) }
+      : conversation),
     { dimensionName: 'locomo', gradeQuestion: gradeLocomoAnswer },
     // Slice is already applied above; pass remaining options without limit.
     { ...options, limit: undefined },

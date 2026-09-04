@@ -6,8 +6,8 @@
  * Reasoning tokens count as completion tokens, so a too-small `max_tokens` is spent
  * entirely on hidden reasoning and `content` comes back empty (finish_reason=length).
  * We therefore (a) set a generous, env-tunable token budget and (b) fall back to
- * `reasoning_content` via {@link extractContent} when `content` is empty, so a heavy
- * reasoning model's answer is never silently dropped.
+ * `reasoning_content` via {@link extractContent} when `content` is empty after a normal
+ * completion, so a heavy reasoning model's answer is never silently dropped.
  *
  * The judge only runs when DEEPSEEK_API_KEY is set, keeping the dimension's
  * deterministic retrieval metrics independent of any external API. Requests are
@@ -34,10 +34,15 @@ export function judgeAvailable(): boolean {
 
 /**
  * Extract a usable answer from a completion message: prefer `content`, but fall
- * back to `reasoning_content` when `content` is empty (reasoning model whose
- * budget was spent on chain-of-thought, leaving the answer only in the trace).
+ * back to `reasoning_content` when `content` is empty after a normal completion
+ * (reasoning model whose budget was spent on chain-of-thought, leaving the answer only in the trace).
  */
-export function extractContent(message: DeepSeekMessage): string {
+function isTruncatedFinishReason(finishReason: string | undefined): boolean {
+  return finishReason === 'length' || finishReason === 'max_tokens';
+}
+
+export function extractContent(message: DeepSeekMessage, finishReason?: string): string {
+  if (isTruncatedFinishReason(finishReason)) return '';
   const content = message.content?.trim();
   if (content) return content;
   return message.reasoning_content?.trim() ?? '';
@@ -79,7 +84,7 @@ export interface DeepSeekJudge extends LlmClient {
 export interface DeepSeekMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
-  /** Chain-of-thought channel on reasoning models; answer falls back here when content is empty. */
+  /** Chain-of-thought channel on reasoning models; answer falls back here after normal completion. */
   reasoning_content?: string | null;
   tool_call_id?: string;
   tool_calls?: DeepSeekToolCall[];
@@ -169,9 +174,20 @@ export async function deepseekChatCompletion(input: {
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
       const choice = data.choices?.[0];
+      const finishReason = choice?.finish_reason ?? '';
+      const message = choice?.message;
+      if (isTruncatedFinishReason(finishReason)) {
+        const contentLength = typeof message?.content === 'string' ? message.content.length : 0;
+        const reasoningLength = typeof message?.reasoning_content === 'string'
+          ? message.reasoning_content.length
+          : 0;
+        throw new Error(
+          `DeepSeek response truncated: finish_reason=${finishReason} completion_tokens=${data.usage?.completion_tokens ?? 'unknown'} content_length=${contentLength} reasoning_content_length=${reasoningLength}`,
+        );
+      }
       return {
-        message: choice?.message ?? { role: 'assistant', content: '' },
-        finishReason: choice?.finish_reason ?? '',
+        message: message ?? { role: 'assistant', content: '' },
+        finishReason,
         usage: {
           promptTokens: data.usage?.prompt_tokens ?? 0,
           completionTokens: data.usage?.completion_tokens ?? 0,
@@ -221,7 +237,7 @@ export function createDeepSeekJudge(
     stats.promptTokens += completion.usage.promptTokens;
     stats.completionTokens += completion.usage.completionTokens;
     onUsage?.(completion.usage);
-    return extractContent(completion.message);
+    return extractContent(completion.message, completion.finishReason);
   }
 
   return { generate, stats };

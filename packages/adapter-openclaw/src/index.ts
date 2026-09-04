@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Type } from '@sinclair/typebox';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/memory-core';
+import { parseEntryIds } from '@memory-river/core';
 import { MemoryRiverEngine, type MemoryRiverEngineDeps } from '@memory-river/core/engine';
 import { SkillValidationError } from '@memory-river/core/skills/validate';
 import { createRalphLoop } from './ralph-index.js';
@@ -218,7 +219,10 @@ const memoryRiver = {
           Type.Literal('keyword'),
           Type.Literal('time_range'),
         ], { description: '使用情境' }),
-        entryIds: Type.Optional(Type.Array(Type.Number(), { description: 'mode=entry_ids 時必填' })),
+        entryIds: Type.Optional(Type.Union([
+          Type.Array(Type.Number(), { description: 'mode=entry_ids 時可傳數字陣列' }),
+          Type.String({ description: "mode=entry_ids 時建議傳區間字串，例如 '336-353'" }),
+        ], { description: 'mode=entry_ids 時必填；可傳數字陣列或區間字串' })),
         keyword: Type.Optional(Type.String({ description: 'mode=keyword 時必填' })),
         timestamp: Type.Optional(Type.String({ description: 'mode=time_range 時用，ISO 時間' })),
         windowMinutes: Type.Optional(Type.Number({ description: 'mode=time_range 窗口半徑', default: 60 })),
@@ -242,10 +246,11 @@ const memoryRiver = {
             if (!fs.existsSync(archivePath)) {
               return { content: [{ type: 'text', text: JSON.stringify({ error: `archive not found for session: ${targetSession}`, availableSessions: listAvailableSessions().slice(0, 5) }) }], isError: true };
             }
-            if (!entryIds || entryIds.length === 0) {
+            const resolvedEntryIds = typeof entryIds === 'string' ? parseEntryIds(entryIds) : entryIds;
+            if (!resolvedEntryIds || resolvedEntryIds.length === 0) {
               return { content: [{ type: 'text', text: JSON.stringify({ error: 'entryIds 不可空' }) }], isError: true };
             }
-            const results = await rehydrate(archivePath, entryIds, bleed);
+            const results = await rehydrate(archivePath, resolvedEntryIds, bleed);
             return { content: [{ type: 'text', text: JSON.stringify({ mode, count: results.length, entries: results.slice(0, limit), usedSession: targetSession }) }] };
           }
 

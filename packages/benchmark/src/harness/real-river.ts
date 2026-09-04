@@ -14,8 +14,13 @@ import {
   createMemoryRiver,
   type ContextMessage,
   type MemoryRiver,
+  type MemorySearchResult,
 } from '@memory-river/core';
 
+import {
+  CrossEncoderReranker,
+  PRIMARY_RERANKER_MODEL,
+} from './cross-encoder-reranker.js';
 import { createDeepSeekJudge as createDeepSeekIngestClient } from './deepseek-llm.js';
 import { createRealEmbedder } from './real-embedder.js';
 import { deepseekApiKey } from './provider-keys.js';
@@ -32,7 +37,8 @@ const benchmarkLogger = {
   },
 };
 const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 60000;
+const DRAIN_STALL_MS = Number(process.env.MR_BENCH_DRAIN_STALL_MS ?? 600_000);
+const DRAIN_MAX_MS = Number(process.env.MR_BENCH_DRAIN_MAX_MS ?? 7_200_000);
 const MIN_SETTLE_MS = 10000;
 const EMPTY_CONVERSATION_PLACEHOLDER_PATTERNS = [
   /對話內容為空/,
@@ -40,6 +46,43 @@ const EMPTY_CONVERSATION_PLACEHOLDER_PATTERNS = [
   /沒有任何對話內容/,
   /沒有任何可供參考的前情提要/,
 ];
+let bgeRerankerPromise: Promise<CrossEncoderReranker> | null = null;
+
+function createLazyBgeReranker(cacheDir: string): {
+  rerank(query: string, candidates: MemorySearchResult[]): Promise<MemorySearchResult[]>;
+} {
+  const getReranker = (): Promise<CrossEncoderReranker> => {
+    if (!bgeRerankerPromise) {
+      bgeRerankerPromise = CrossEncoderReranker.load({
+        cacheDir,
+        spec: PRIMARY_RERANKER_MODEL,
+        allowFallback: false,
+      }).then(async reranker => {
+        await reranker.warm();
+        return reranker;
+      });
+    }
+    return bgeRerankerPromise;
+  };
+
+  return {
+    async rerank(query, candidates) {
+      const reranker = await getReranker();
+      const { logits } = await reranker.scorePairs(candidates.map(candidate => ({
+        query,
+        passage: candidate.entry.text,
+      })));
+      return candidates
+        .map((candidate, index) => ({
+          candidate,
+          logit: logits[index] ?? Number.NEGATIVE_INFINITY,
+          index,
+        }))
+        .sort((a, b) => b.logit - a.logit || a.index - b.index)
+        .map(item => item.candidate);
+    },
+  };
+}
 
 export function assertNoConcentrationPlaceholders(memoryTexts: string[]): void {
   const placeholderCount = memoryTexts.filter(text =>
@@ -51,6 +94,24 @@ export function assertNoConcentrationPlaceholders(memoryTexts: string[]): void {
     'BenchmarkIngestionError: concentration produced empty-conversation placeholder(s) — ' +
     `${placeholderCount} of ${memoryTexts.length} memories are placeholders. ` +
     'Check harness message formatting.',
+  );
+}
+
+export function countInboxBacklog(inboxDir: string): number {
+  if (!fs.existsSync(inboxDir)) return 0;
+  return fs.readdirSync(inboxDir).filter(name => name !== 'error').length;
+}
+
+export function assertInboxDrained(inboxDir: string): void {
+  const pending = countInboxBacklog(inboxDir);
+  if (pending === 0) return;
+
+  const examples = fs.readdirSync(inboxDir)
+    .filter(name => name !== 'error')
+    .slice(0, 5);
+  throw new Error(
+    `BenchmarkIngestionError: inbox is not drained — pending=${pending}; ` +
+    `examples=${examples.join(', ')}`,
   );
 }
 
@@ -112,15 +173,22 @@ export async function createRealMemoryRiver(
   const ingestLlm = createDeepSeekIngestClient(usage => {
     onConcentrationUsage?.({ provider: 'deepseek', ...usage });
   }, { ingest: true });
+  const bgeReranker = createLazyBgeReranker(hfCache);
 
   const river = createMemoryRiver(
     {
       dataDir,
       ramDir,
+      retrieval: {
+        reranker: bgeReranker,
+      },
       concentration: {
         deepseekApiKey: deepseekKey,
         deepseekModel: process.env.MR_INGEST_MODEL ?? 'deepseek-v4-flash',
-        maxTokens: 8192,
+        maxTokens: 32768,
+        // LoCoMo timestamps are dataset wall-clock parsed as UTC; render [at=] in UTC so
+        // relative dates ('yesterday') anchor to the day the dataset states.
+        timezone: 'UTC',
       } as any,
     },
     {
@@ -139,25 +207,42 @@ export async function createRealMemoryRiver(
 
   async function waitForMemoryStability(): Promise<string[]> {
     const startedAt = Date.now();
-    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let lastProgressAt = startedAt;
+    let lastProgressLogAt = startedAt;
     let previousCount = -1;
+    let previousBacklog = -1;
     let stablePolls = 0;
     let memoryTexts: string[] = [];
-    while (Date.now() < deadline) {
+    while (true) {
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
       const memories = (await river.recall('conversation people events dates preferences', 1000))
         .filter(result => result.entry.text !== '_SYSTEM_INIT_');
       const uniqueMemories = new Map(memories.map(result => [result.entry.id, result.entry.text]));
       const count = uniqueMemories.size;
       memoryTexts = [...uniqueMemories.values()];
+      const backlog = countInboxBacklog(inboxDir);
       stablePolls = count === previousCount ? stablePolls + 1 : 0;
-      const inboxBusy = fs.existsSync(inboxDir) &&
-        fs.readdirSync(inboxDir).some(name => name !== 'error');
-      const settledLongEnough = Date.now() - startedAt >= MIN_SETTLE_MS;
-      if (!inboxBusy && settledLongEnough && stablePolls >= 2) return memoryTexts;
+      const now = Date.now();
+      if (count !== previousCount || backlog !== previousBacklog) lastProgressAt = now;
+      const elapsedMs = now - startedAt;
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+      const settledLongEnough = elapsedMs >= MIN_SETTLE_MS;
+      if (backlog === 0 && settledLongEnough && stablePolls >= 2) return memoryTexts;
+      if (now - lastProgressAt > DRAIN_STALL_MS) {
+        console.warn(`[drain] pending=${backlog} memories=${count} elapsedSec=${elapsedSec} reason=stalled`);
+        return memoryTexts;
+      }
+      if (elapsedMs > DRAIN_MAX_MS) {
+        console.warn(`[drain] pending=${backlog} memories=${count} elapsedSec=${elapsedSec} reason=hard-cap`);
+        return memoryTexts;
+      }
+      if (now - lastProgressLogAt >= 30_000) {
+        console.info(`[drain] pending=${backlog} memories=${count} elapsedSec=${elapsedSec}`);
+        lastProgressLogAt = now;
+      }
       previousCount = count;
+      previousBacklog = backlog;
     }
-    return memoryTexts;
   }
 
   return {
@@ -178,21 +263,29 @@ export async function createRealMemoryRiver(
         ...messages.map(message => JSON.stringify({ type: 'message', message })),
       ];
       fs.writeFileSync(sessionPath, `${lines.join('\n')}\n`, 'utf8');
-      const result = await river.compactSessionFile({ sessionKey, sessionId: sessionKey });
+      // LoCoMo sessions are completed historical conversations; protecting the last five turns would leave them out of memory forever.
+      const result = await river.compactSessionFile({ sessionKey, sessionId: sessionKey }, { exhaustive: true });
       const memoryTexts = await waitForMemoryStability();
       assertNoConcentrationPlaceholders(memoryTexts);
       return { compacted: result.compacted, memoryCount: memoryTexts.length };
     },
     snapshotTo(destDir) {
-      // Ingest has settled (waitForMemoryStability drained the inbox) so the
-      // on-disk store is quiescent and safe to copy verbatim.
+      assertInboxDrained(path.join(root, 'data', 'inbox'));
+      // The inbox was expected to be idle after waitForMemoryStability; keep
+      // partial snapshots from being created if draining stalled or hit its cap.
       fs.mkdirSync(path.dirname(destDir), { recursive: true });
-      fs.rmSync(destDir, { recursive: true, force: true });
+      // Copy into a sibling and swap, so a crash mid-copy leaves the previous
+      // snapshot intact instead of destroying it. Callers checkpoint per
+      // session now, so this runs dozens of times per conversation.
+      const stagingDir = `${destDir}.staging`;
+      fs.rmSync(stagingDir, { recursive: true, force: true });
       const snapshotInboxDir = path.join(root, 'data', 'inbox');
-      fs.cpSync(root, destDir, {
+      fs.cpSync(root, stagingDir, {
         recursive: true,
         filter: src => src !== snapshotInboxDir && !src.startsWith(snapshotInboxDir + path.sep),
       });
+      fs.rmSync(destDir, { recursive: true, force: true });
+      fs.renameSync(stagingDir, destDir);
     },
     async cleanup() {
       await river.stop();

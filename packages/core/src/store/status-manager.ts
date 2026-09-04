@@ -62,8 +62,23 @@ export class StatusManager {
       const meta = this.parseMetadata(entry.metadata);
       fromStatus = (meta.status as MemoryStatus) ?? null;
 
+      if (fromStatus === req.toStatus) {
+        return {
+          ok: true,
+          memoryId: req.memoryId,
+          fromStatus,
+          toStatus: req.toStatus,
+          auditRowId,
+          noOp: true,
+        };
+      }
+
       // 3. 更新 metadata 欄位
       meta.status = req.toStatus;
+      // 把「為什麼變成這個狀態」直接寫進 entry，否則只有 audit table 查得到，
+      // 除錯時得 join 兩張表才知道一筆記憶是被哪條路徑藏起來的。
+      meta.statusReason = req.reason;
+      meta.statusSource = req.source;
 
       // 設置時間戳和額外欄位（保持與現有寫入者行為一致）
       if (req.toStatus === 'superseded') {

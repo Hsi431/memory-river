@@ -1,6 +1,7 @@
-import type {
-  ContextMessage,
-  MemoryRiver,
+import {
+  parseEntryIds,
+  type ContextMessage,
+  type MemoryRiver,
 } from '@memory-river/core';
 
 import {
@@ -80,7 +81,13 @@ export const OTTER_TOOLS: DeepSeekTool[] = [
         type: 'object',
         properties: {
           mode: { type: 'string', enum: ['entry_ids', 'keyword', 'time_range'] },
-          entryIds: { type: 'array', items: { type: 'integer' } },
+          entryIds: {
+            anyOf: [
+              { type: 'string', description: "Recommended range form, e.g. '336-353'" },
+              { type: 'array', items: { type: 'integer' } },
+            ],
+            description: 'Entry IDs as a range string or an integer array.',
+          },
           keyword: { type: 'string' },
           timestamp: { type: 'string' },
           windowMinutes: { type: 'number', minimum: 1, default: 60 },
@@ -338,7 +345,8 @@ export async function runOtter(input: {
     .join('\n\n');
   addDeliveredText(input.deliveredContext, 'autoRecall', injectedContext);
   const fanoutContext = input.extraAutoRecallContext?.filter(Boolean).join('\n\n') ?? '';
-  const entryIdsAdvertisedInPreamble = injectedContext.includes('entryIds=[');
+  const entryIdsAdvertisedInPreamble = injectedContext.includes('entryIds=[')
+    || injectedContext.includes("entryIds='");
   const contextText = [injectedContext, fanoutContext].filter(Boolean).join('\n\n');
   const system = contextText
     ? `${effectiveSystemPrompt()}\n\n${contextText}`
@@ -474,9 +482,11 @@ export async function runOtter(input: {
       const limit = finiteNumber(args.limit, 10);
       let turns: RehydratedTurn[] = [];
       if (args.mode === 'entry_ids') {
-        const entryIds = Array.isArray(args.entryIds)
-          ? args.entryIds.filter((id): id is number => typeof id === 'number' && Number.isInteger(id))
-          : [];
+        const entryIds = typeof args.entryIds === 'string'
+          ? parseEntryIds(args.entryIds)
+          : Array.isArray(args.entryIds)
+            ? args.entryIds.filter((id): id is number => typeof id === 'number' && Number.isInteger(id))
+            : [];
         turns = await input.rehydrateById(entryIds, limit);
       } else if (args.mode === 'keyword') {
         const keyword = typeof args.keyword === 'string' ? args.keyword.trim() : '';

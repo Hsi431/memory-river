@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   createIdxRehydrator,
+  gradeLocomoAnswer,
   isAbstention,
   sampleLocomo,
 } from '../dist/dimensions/locomo.js';
@@ -74,6 +75,69 @@ test('category-5 grading recognizes abstentions without accepting guesses', () =
   assert.equal(isAbstention('That is not mentioned in the conversation.'), true);
   assert.equal(isAbstention('The available context cannot determine the answer.'), true);
   assert.equal(isAbstention('Alex prefers dogs.'), false);
+});
+
+test('category-5 product grader accepts abstention/correction and rejects bait/unrelated answers', async () => {
+  const candidates = [
+    '沒有這個紀錄。',
+    '那是 John，不是 James。',
+    'James adopted puppy Ned.',
+    '今天天氣很好。',
+  ];
+  const verdicts = ['YES', 'YES', 'NO', 'NO'];
+  const prompts = [];
+  const judge = {
+    async generate(prompt) {
+      prompts.push(prompt);
+      return verdicts[prompts.length - 1];
+    },
+  };
+  const qa = {
+    question: 'What did James adopt?',
+    evidence: ['D2:3'],
+    category: '5',
+    adversarialAnswer: 'James adopted puppy Ned.',
+  };
+
+  const grades = await Promise.all(
+    candidates.map(candidate => gradeLocomoAnswer(judge, qa, candidate)),
+  );
+
+  assert.deepEqual(grades.map(grade => grade.correct), [true, true, false, false]);
+  assert.equal(prompts.length, candidates.length);
+  assert.ok(prompts.every(prompt => prompt.includes('Adversarial answer (bait, not gold): James adopted puppy Ned.')));
+  assert.ok(prompts.every(prompt => prompt.includes('Merely mentioning a different name is not enough')));
+  assert.ok(prompts.every((prompt, index) => prompt.includes(`Candidate answer: ${candidates[index]}`)));
+});
+
+test('category-5 grader hard-rejects a candidate equal to the adversarial answer', async () => {
+  const judge = { async generate() { return 'YES'; } };
+  const qa = {
+    question: 'What did James adopt?',
+    category: '5',
+    adversarialAnswer: 'James adopted puppy Ned.',
+  };
+
+  const grade = await gradeLocomoAnswer(judge, qa, 'James adopted puppy Ned.');
+
+  assert.deepEqual(grade, { correct: false, parseFailure: false });
+});
+
+test('category-5 grader preserves a non-equal corrective answer', async () => {
+  const judge = { async generate() { return 'YES'; } };
+  const qa = {
+    question: 'What did James adopt?',
+    category: '5',
+    adversarialAnswer: 'James adopted puppy Ned.',
+  };
+
+  const grade = await gradeLocomoAnswer(
+    judge,
+    qa,
+    'John did not adopt puppy Ned; James adopted puppy Ned.',
+  );
+
+  assert.deepEqual(grade, { correct: true, parseFailure: false });
 });
 
 test('LoCoMo sampling is deterministic and balanced by conversation and category', (t) => {

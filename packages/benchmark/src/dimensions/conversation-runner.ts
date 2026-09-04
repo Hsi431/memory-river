@@ -35,6 +35,71 @@ import { createIdxRehydrator } from './locomo-rehydrator.js';
 
 import type { ContextMessage } from '@memory-river/core';
 
+// ─── Snapshot resume ─────────────────────────────────────────────────────────
+
+/**
+ * `manifest.json` means "this conversation was ingested end to end" to every
+ * downstream tool (findSnapshotPath keys off it), so a half-ingested snapshot
+ * must not be advertised there. Partial progress goes to `checkpoint.json`,
+ * which only the ingestion loop reads and which is deleted once the manifest
+ * is written.
+ */
+export interface SnapshotCheckpoint {
+  memoryCount: number;
+  compactedSessions: number;
+  /** How many sessions have already been ingested into this snapshot. */
+  ingestedSessions: number;
+}
+
+export type IngestionPlan =
+  | { mode: 'fresh' }
+  | { mode: 'restore'; memoryCount: number; compactedSessions: number }
+  | {
+    mode: 'resume';
+    startSession: number;
+    memoryCount: number;
+    compactedSessions: number;
+  };
+
+export function checkpointPathFor(snapshotPath: string): string {
+  return path.join(snapshotPath, 'checkpoint.json');
+}
+
+function readJsonIfPresent<T>(filePath: string): T | null {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
+  } catch {
+    // A snapshot killed mid-write is worth restarting, not crashing over.
+    return null;
+  }
+}
+
+export function planConversationIngestion(
+  snapshotPath: string | undefined,
+  rebuildSnapshot: boolean,
+): IngestionPlan {
+  if (!snapshotPath || rebuildSnapshot) return { mode: 'fresh' };
+  const manifest = readJsonIfPresent<{ memoryCount: number; compactedSessions: number }>(
+    path.join(snapshotPath, 'manifest.json'),
+  );
+  if (manifest) {
+    return {
+      mode: 'restore',
+      memoryCount: manifest.memoryCount,
+      compactedSessions: manifest.compactedSessions,
+    };
+  }
+  const checkpoint = readJsonIfPresent<SnapshotCheckpoint>(checkpointPathFor(snapshotPath));
+  if (!checkpoint || !(checkpoint.ingestedSessions > 0)) return { mode: 'fresh' };
+  return {
+    mode: 'resume',
+    startSession: checkpoint.ingestedSessions,
+    memoryCount: checkpoint.memoryCount,
+    compactedSessions: checkpoint.compactedSessions,
+  };
+}
+
 // ─── Shared parsed shapes ────────────────────────────────────────────────────
 
 export interface ConvTurn {
@@ -403,11 +468,12 @@ export async function runConversationBenchmark(
       ? path.join(options.snapshotDir, snapshotCacheKey(conversation))
       : undefined;
     const manifestPath = snapshotPath ? path.join(snapshotPath, 'manifest.json') : undefined;
-    const canRestore = !!manifestPath && !options.rebuildSnapshot && fs.existsSync(manifestPath);
+    const checkpointPath = snapshotPath ? checkpointPathFor(snapshotPath) : undefined;
+    const plan = planConversationIngestion(snapshotPath, options.rebuildSnapshot === true);
     const real = await createRealMemoryRiver(event => {
       addProviderUsage(conversationIngestionUsage, event);
       addProviderUsage(ingestionUsage, event);
-    }, canRestore ? snapshotPath : undefined);
+    }, plan.mode === 'fresh' ? undefined : snapshotPath);
     const convKey = `${dimensionName}-${conversation.sampleId}`;
     const sessionKeys = conversation.sessions.map(
       session => `${convKey}-s${session.index}`,
@@ -416,32 +482,53 @@ export async function runConversationBenchmark(
     let memoryCount = 0;
     try {
       let conversationIngestionSeconds = 0;
-      if (canRestore) {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath!, 'utf8')) as {
-          memoryCount: number;
-          compactedSessions: number;
-        };
-        memoryCount = manifest.memoryCount;
-        compactedSessions = manifest.compactedSessions;
+      if (plan.mode === 'restore') {
+        memoryCount = plan.memoryCount;
+        compactedSessions = plan.compactedSessions;
       } else {
         const ingestionStartedAt = Date.now();
-        await real.river.archiveTranscript(
-          { sessionKey: convKey, sessionId: convKey },
-          conversation.sessions.flatMap(session => session.messages),
-        );
+        if (plan.mode === 'resume') {
+          // The restored snapshot already carries the conversation transcript
+          // and the memories of the first `startSession` sessions.
+          memoryCount = plan.memoryCount;
+          compactedSessions = plan.compactedSessions;
+          console.log(
+            `[snapshot] ${conversation.sampleId}: resuming from checkpoint at session `
+            + `${plan.startSession}/${conversation.sessions.length} `
+            + `(${plan.memoryCount} memories)`,
+          );
+        } else {
+          await real.river.archiveTranscript(
+            { sessionKey: convKey, sessionId: convKey },
+            conversation.sessions.flatMap(session => session.messages),
+          );
+        }
         for (const [index, session] of conversation.sessions.entries()) {
+          if (plan.mode === 'resume' && index < plan.startSession) continue;
           const result = await real.forceCompactSession(sessionKeys[index], session.messages);
           if (result.compacted) compactedSessions++;
           memoryCount = result.memoryCount;
+          // Checkpoint every session: a crash used to throw away the whole
+          // conversation's ingestion (hours of paid LLM calls, twice).
+          if (snapshotPath && checkpointPath) {
+            real.snapshotTo(snapshotPath);
+            fs.writeFileSync(
+              checkpointPath,
+              JSON.stringify({ memoryCount, compactedSessions, ingestedSessions: index + 1 }),
+              'utf8',
+            );
+          }
         }
         conversationIngestionSeconds = (Date.now() - ingestionStartedAt) / 1000;
-        if (snapshotPath && manifestPath) {
-          real.snapshotTo(snapshotPath);
+        if (manifestPath && checkpointPath) {
+          // The last per-session checkpoint already wrote the snapshot itself;
+          // all that is missing is the "ingested end to end" marker.
           fs.writeFileSync(
             manifestPath,
             JSON.stringify({ memoryCount, compactedSessions }),
             'utf8',
           );
+          fs.rmSync(checkpointPath, { force: true });
         }
       }
       ingestionWallClockSeconds += conversationIngestionSeconds;

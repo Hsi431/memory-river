@@ -17,6 +17,7 @@ import { CATEGORY_DESCRIPTIONS } from '../types.js';
 import type { StatusManager } from '../store/status-manager.js';
 import { buildNightRecoveryMetadata, type NightRecoverySource } from './night-recovery.js';
 import type { LlmClient, Notifier } from '../ports.js';
+import { mayCardinalitySupersede, maySupersede } from '../util/slot-subject.js';
 
 // ============================================================================
 // Types
@@ -31,7 +32,6 @@ export interface ConsolidationDecision {
   // for update
   newCategory?: MemoryCategory;
   newConfidence?: number;
-  newSlotKey?: string;
   newText?: string;
 }
 
@@ -513,7 +513,6 @@ ${memoryTexts}
         mergeIntoId: d.mergeIntoId,
         newCategory: d.newCategory,
         newConfidence: d.newConfidence,
-        newSlotKey: d.newSlotKey,
         newText: d.newText,
       });
     }
@@ -565,6 +564,23 @@ ${memoryTexts}
         const targetMeta = await this.store.getById(d.mergeIntoId, true);
         // P1 Fix #4: 防止 LLM 幻覺，確保兩個 ID 都存在
         if (!meta || !targetMeta) continue;
+
+        let sourceMetadata: any = {};
+        let targetMetadata: any = {};
+        try {
+          sourceMetadata = typeof meta.metadata === 'string'
+            ? (meta.metadata.trim() ? JSON.parse(meta.metadata) : {})
+            : (meta.metadata || {});
+          targetMetadata = typeof targetMeta.metadata === 'string'
+            ? (targetMeta.metadata.trim() ? JSON.parse(targetMeta.metadata) : {})
+            : (targetMeta.metadata || {});
+        } catch {
+          continue;
+        }
+        if (!maySupersede(targetMetadata?.slotSubject, sourceMetadata?.slotSubject)
+          || !mayCardinalitySupersede(targetMetadata?.slotCardinality, sourceMetadata?.slotCardinality)) {
+          continue;
+        }
 
         statusChangeReqs.push({
           memoryId: id,
@@ -666,7 +682,6 @@ ${memoryTexts}
             updates.metadata = JSON.stringify(parsed);
           }
         }
-        if (d.newSlotKey) updates.slotKey = d.newSlotKey;
         if (d.newText) updates.text = d.newText;
 
         attemptedCount++;

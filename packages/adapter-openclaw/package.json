@@ -25,7 +25,7 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@memory-river/core": "0.2.5",
+    "@memory-river/core": "0.2.7",
     "@sinclair/typebox": "^0.32.0"
   },
   "devDependencies": {

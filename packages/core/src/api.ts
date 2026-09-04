@@ -11,6 +11,7 @@ import { MemoryRiverEngine, type MemoryRiverEngineDeps } from './engine.js';
 import { rehydrate as rehydrateByIds, rehydrateByTime, type TranscriptEntry } from './transcript/rehydrate.js';
 import { rehydrateByKeyword } from './transcript/rehydrate-keyword.js';
 import { createTranscriptArchive, type ArchiveSnapshotResult } from './transcript/transcript-archive.js';
+import { parseEntryIds } from './util/entry-ids.js';
 import {
   DEFAULT_CONFIG,
   type ContextMessage,
@@ -61,7 +62,7 @@ export interface AssembleContextOptions {
 }
 
 export type RehydrateRequest =
-  | { mode: 'entry_ids'; sessionKey: string; entryIds: number[]; bleed?: number; limit?: number }
+  | { mode: 'entry_ids'; sessionKey: string; entryIds: number[] | string; bleed?: number; limit?: number }
   | { mode: 'time_range'; sessionKey: string; timestamp: string; windowMinutes?: number; limit?: number }
   | { mode: 'keyword'; keyword: string; sessionKey?: string; limit?: number; offset?: number };
 
@@ -200,9 +201,12 @@ export function createMemoryRiver(config: MemoryRiverConfig, deps: MemoryRiverDe
     },
     async rehydrate(req) {
       if (req.mode === 'entry_ids') {
+        const entryIds = typeof req.entryIds === 'string'
+          ? parseEntryIds(req.entryIds)
+          : req.entryIds;
         return (await rehydrateByIds(
           transcriptArchive.getTranscriptPath(req.sessionKey),
-          req.entryIds,
+          entryIds,
           req.bleed,
         )).slice(0, req.limit);
       }

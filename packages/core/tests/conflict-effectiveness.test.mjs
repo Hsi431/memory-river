@@ -74,6 +74,7 @@ function makeDetector(store, {
     callLog.queried++;
     return candidates;
   };
+  store.getById = async () => ({ metadata: '{}' });
   const statusManager = {
     changeStatus: async (request) => {
       callLog.statuses.push(request);

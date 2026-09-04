@@ -30,5 +30,6 @@ export type {
 export { Embedder as OllamaEmbedding } from './providers/embedder-v5.js';
 export { getDevShmFreeBytes, resolveRamDbPath, MIN_RAM_DB_BYTES } from './storage.js';
 export type { StorageMode } from './storage.js';
+export { parseEntryIds } from './util/entry-ids.js';
 export { describeMemoryTemporalProvenance } from './retrieval/temporal-provenance.js';
 export type { TemporalProvenance, TemporalRole } from './retrieval/temporal-provenance.js';

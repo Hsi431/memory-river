@@ -12,6 +12,7 @@ import { MemoryStore } from '../store/store-v4.js';
 import { StatusManager } from '../store/status-manager.js';
 import { Embedder } from '../providers/embedder-v5.js';
 import { hashQuery } from '../util/util-hash.js';
+import { mayCardinalitySupersede, maySupersede } from '../util/slot-subject.js';
 import type { LlmClient } from '../ports.js';
 
 // 需要衝突偵測的高風險類別
@@ -72,17 +73,47 @@ export class ConflictDetector {
     // 誤判會把還有效的記憶標成 deprecated。要改必須先有能分辨「該合併/不該合併」的實驗,
     // 只看 UPDATE 率上升不算證據。候選選取本身已由 tests/conflict-detector-candidates.test.mjs 鎖住。
     const candidates = await this.store.hybridVectorSearch(newText, 10);
+    let newSubject: unknown = null;
+    let newCardinality: unknown = null;
+    try {
+      const newMemory = await this.store.getById(newMemoryId, true);
+      if (!newMemory) return { hasConflict: false, conflictingIds: [], resolution: 'no_candidates' };
+      let metadata: any = newMemory.metadata || {};
+      if (typeof newMemory.metadata === 'string' && newMemory.metadata.trim().length > 0) {
+        try {
+          const parsed = JSON.parse(newMemory.metadata);
+          metadata = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch {
+          return { hasConflict: false, conflictingIds: [], resolution: 'no_candidates' };
+        }
+      }
+      newSubject = metadata?.slotSubject;
+      newCardinality = metadata?.slotCardinality;
+    } catch {
+      return { hasConflict: false, conflictingIds: [], resolution: 'no_candidates' };
+    }
+
     const sameCategoryCandidates = candidates.filter(r => {
       if (r.entry.id === newMemoryId) return false;
       if (r.entry.id.startsWith('init_')) return false;
       if (r.entry.category !== category) return false;
       // 只看 active 狀態的記憶
-      try {
-        const meta = typeof r.entry.metadata === 'string'
-          ? JSON.parse(r.entry.metadata) : r.entry.metadata;
-        if (meta?.status === 'deprecated') return false;
-      } catch {}
-      return true;
+      let meta: any = {};
+      if (typeof r.entry.metadata === 'string') {
+        if (r.entry.metadata.trim().length > 0) {
+          try {
+            const parsed = JSON.parse(r.entry.metadata);
+            meta = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+          } catch {
+            return false;
+          }
+        }
+      } else {
+        meta = r.entry.metadata || {};
+      }
+      if (meta?.status === 'deprecated') return false;
+      return maySupersede(newSubject, meta?.slotSubject)
+        && mayCardinalitySupersede(newCardinality, meta?.slotCardinality);
     });
 
     this.recordEffectiveness({

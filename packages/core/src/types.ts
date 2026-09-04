@@ -3,6 +3,7 @@
  * Merged from v4/types.ts + context-river/concentrator.ts
  */
 import * as os from 'node:os';
+import type { MemoryReranker } from './retrieval/reranker.js';
 
 export type MemoryCategory =
   | "preference"
@@ -109,6 +110,13 @@ export interface MemorySearchResult {
   fusedScore: number;
   /** CRAG / reranker 評估後的最終分數 */
   finalScore?: number;
+  /** 同次檢索結果中可判定的較新版本資訊 */
+  versionRelation?: MemoryVersionRelation;
+}
+
+export interface MemoryVersionRelation {
+  isOlder: true;
+  newerId: string;
 }
 
 export interface EnumerationPlan {
@@ -221,6 +229,7 @@ export interface StatusChangeResult {
   fromStatus: MemoryStatus | null;
   toStatus: MemoryStatus;
   auditRowId: string;
+  noOp?: boolean;
   error?: string;
 }
 
@@ -392,6 +401,12 @@ export interface PluginConfig {
     vectorWeight?: number;
     bm25Weight?: number;
     candidatePoolMultiplier?: number;
+    rerank?: {
+      enabled?: boolean;
+      overfetch?: number;
+    };
+    /** Host-injected implementation; core does not load a model itself. */
+    reranker?: MemoryReranker;
   };
   cleanup?: {
     enabled?: boolean;
@@ -446,6 +461,7 @@ export interface PluginConfig {
     maxTokens?: number;
     deepseekApiKey?: string;
     deepseekModel?: string;
+    timezone?: string;
     asyncCompactAfterAssemble?: boolean;
     asyncCompactConcurrency?: number;
     asyncCompactRaceGuard?: boolean;
@@ -464,6 +480,10 @@ export const DEFAULT_CONFIG: Omit<Required<PluginConfig>, 'dbPath' | 'ramDbPath'
     vectorWeight: 0.7,
     bm25Weight: 0.3,
     candidatePoolMultiplier: 2,
+    rerank: {
+      enabled: false,
+      overfetch: 3,
+    },
   },
   cleanup: {
     enabled: true,
@@ -520,7 +540,7 @@ concentration: {
     codexReasoningEffort: 'low',
     codexWorkdir: os.homedir(),
     codexTimeoutMs: 120000,
-    maxTokens: 8192,
+    maxTokens: 32768,
     deepseekApiKey: "",
     deepseekModel: 'deepseek-v4-flash',
     asyncCompactAfterAssemble: false,

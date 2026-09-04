@@ -22,6 +22,7 @@ import type { MemoryCategory } from "../types.js";
 import type { LlmClient } from "../ports.js";
 import { setBoundedMapEntry } from "../util/bounded-map.js";
 import { resolveSessionIdentity } from "../util/session-identity.js";
+import { getEffectiveSlotSubject, mayCardinalitySupersede, maySupersede } from "../util/slot-subject.js";
 import {
   isCompactRequestFilename,
   readCompactRequest,
@@ -249,7 +250,7 @@ export class InboxWatcher {
       sessionKey: capsuleMeta.sessionKey ?? capsuleMeta.metadata?.sessionKey,
       sessionId: capsuleMeta.sessionId ?? capsuleMeta.metadata?.sessionId,
     };
-    const identity = resolveSessionIdentity(normalized);
+    const identity = resolveSessionIdentity(normalized, { silentFallback: true });
     return identity.isFallback ? path.basename(filePath) : identity.canonicalKey;
   }
 
@@ -671,8 +672,9 @@ export class InboxWatcher {
     const capsuleType = item.capsuleType ?? 'working_memory';
 
     // ── Structured Slot 抽取（Phase 1）────────────────────────
-    // confidence >= 0.8 → 建立 Slot；0.5–0.8 → 待審核池；< 0.5 → 純 free-text
-    let slotData: { slotKey: string; slotValue: number | string | boolean; confidence: number; extractionDomain: "technical" | "identity" | "preference" | "free_text"; isStructured: boolean } | null = null;
+    // confidence >= 0.5 → 建立 Slot；< 0.5 → 純 free-text
+    // ⚠️ 實作只有這一道閘。註解曾寫過 0.8/0.5 三段式與待審核池，那是從未實作的設計，勿再引用。
+    let slotData: { slotKey: string; slotValue: number | string | boolean; subject: string | null; cardinality: 'single' | 'multi' | null; confidence: number; extractionDomain: "technical" | "identity" | "preference" | "free_text"; isStructured: boolean } | null = null;
     try {
       slotData = await this.extractSlot(item.text, item.category);
       if (slotData?.isStructured) {
@@ -810,6 +812,13 @@ export class InboxWatcher {
 
     // Slot routing：低 confidence（< 0.5）不走 slot 邏輯
     const isSlotEligible = slotData?.isStructured === true && (slotData.confidence ?? 0) >= 0.5;
+    const effectiveNewSubject = isSlotEligible && slotData
+      ? getEffectiveSlotSubject({ slotSubject: slotData.subject, subject: metadataObj.subject })
+      : null;
+    if (isSlotEligible && slotData) {
+      metadataObj.slotSubject = slotData.subject;
+      metadataObj.slotCardinality = slotData.cardinality;
+    }
 
     if (relation.action === "UPDATE" && relation.parentId) {
       // 加寫鎖：防止兩筆記憶同時 UPDATE 同一個 parentId 造成 race condition
@@ -817,7 +826,7 @@ export class InboxWatcher {
       let supersedesIds: string[] = [];
       if (isSlotEligible && slotData?.slotKey) {
         try {
-          const superseded = await this.checkSupersedes(slotData.slotKey, '');
+          const superseded = await this.checkSupersedes(slotData.slotKey, effectiveNewSubject, slotData.cardinality);
           supersedesIds = superseded.filter(id => id !== relation.parentId);
         } catch (err) {
           console.warn('[inbox-watcher] checkSupersedes failed:', err);
@@ -842,12 +851,39 @@ export class InboxWatcher {
 
         const oldMemory = await this.store.getById(relation.parentId!, true);
         if (oldMemory) {
-          await this.statusManager.changeStatus({
-            memoryId: relation.parentId!,
-            toStatus: 'deprecated',
-            reason: 'causal_update',
-            source: 'inbox-watcher.update',
-          });
+          let oldMetadata: Record<string, any> | null;
+          const rawMetadata = oldMemory.metadata;
+          if (typeof rawMetadata === 'string' && rawMetadata.trim().length > 0) {
+            try {
+              const parsed = JSON.parse(rawMetadata);
+              oldMetadata = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch {
+              oldMetadata = null;
+            }
+          } else {
+            oldMetadata = this.parseMetadata(rawMetadata);
+          }
+          const newCardinality = isSlotEligible ? slotData?.cardinality : null;
+          const oldSubject = oldMetadata ? getEffectiveSlotSubject(oldMetadata) : null;
+          const parentStatus = (oldMemory as any).status ?? oldMetadata?.status ?? 'active';
+          if (isSlotEligible
+            && slotData?.slotKey
+            && newCardinality === 'single'
+            && (oldMemory as any).slotKey === slotData.slotKey
+            && oldMetadata
+            && mayCardinalitySupersede(newCardinality, oldMetadata.slotCardinality)
+            && effectiveNewSubject !== null
+            && oldSubject !== null
+            && effectiveNewSubject === oldSubject
+            && parentStatus === 'active') {
+            await this.statusManager.changeStatus({
+              memoryId: relation.parentId!,
+              toStatus: 'deprecated',
+              reason: 'causal_update',
+              source: 'inbox-watcher.update',
+              supersededBy: storedEntryId,
+            });
+          }
 
           if ((oldMemory as any).slotKey) {
             console.log(`[inbox-watcher] UPDATE superseding old slot: ${(oldMemory as any).slotKey}`);
@@ -859,7 +895,7 @@ export class InboxWatcher {
       let supersedesIds: string[] = [];
       if (isSlotEligible && slotData?.slotKey) {
         try {
-          supersedesIds = await this.checkSupersedes(slotData.slotKey, '');
+          supersedesIds = await this.checkSupersedes(slotData.slotKey, effectiveNewSubject, slotData.cardinality);
           if (supersedesIds.length > 0) {
             console.log(`[inbox-watcher] Slot supersedes: ${slotData.slotKey} supersedes ${supersedesIds.length} previous versions`);
           }
@@ -891,7 +927,7 @@ export class InboxWatcher {
             toStatus: 'deprecated',
             reason: 'slot_supersedes',
             source: 'inbox-watcher.slot',
-            supersededBy: '',
+            supersededBy: storedEntryId,
           });
         } catch { /* ignore */ }
       }
@@ -956,9 +992,10 @@ export class InboxWatcher {
     // 嘗試用 LLM 萃取
     try {
       const prompt = `從以下文字萃取技能名稱（最多15字，纯中文）:\n${summary}`;
+      // reasoning 模型的思考也算 completion token，寫死 8192 連思考都不夠、
+      // 每次都被截斷落到下面的關鍵詞 fallback。不指定，改吃 concentration.maxTokens。
       const name = (await this.llm.generate(prompt, {
         purpose: 'skill-name-extraction',
-        maxTokens: 20,
       })).trim();
       if (name) return name.slice(0, 15);
     } catch (err) {
@@ -1008,10 +1045,9 @@ export class InboxWatcher {
    * extractSlot — LLM 結構化抽取
    * 輸入文字 → 判斷是否可結構化 → 輸出 slotKey / slotValue / confidence / extractionDomain
    *
-   * confidence 等級：
-   * >= 0.8：高可信，建立 Slot，自動 supersedes 檢查
-   * 0.5–0.8：中可信，寫入待審核池（Night Consolidation 處理）
-   * < 0.5：低可信，純 free-text，不建 Slot
+   * confidence 門檻（實作只有一道，見 isSlotEligible）：
+   * >= 0.5：建立 Slot，走 supersedes 檢查
+   * < 0.5：純 free-text，不建 Slot
    */
   private async extractSlot(
     text: string,
@@ -1019,6 +1055,8 @@ export class InboxWatcher {
   ): Promise<{
     slotKey: string;
     slotValue: number | string | boolean;
+    subject: string | null;
+    cardinality: 'single' | 'multi' | null;
     confidence: number;
     extractionDomain: "technical" | "identity" | "preference" | "free_text";
     isStructured: boolean;
@@ -1027,19 +1065,22 @@ export class InboxWatcher {
 
 文字：${text.slice(0, 800)}
 
- Slot Key 命名規範：{namespace}:{param_name}
- namespace 自由命名但同類事實要穩定（如 user:、memory:、project:）；extractionDomain 才是四選一：technical | identity | preference | free_text
+ Slot Key 命名規範：{subject}:{param_name}
+ namespace 必須是這條事實的主體本身；user: 只保留給第一人稱的說話者／主要使用者。同一主體的同類事實要穩定；extractionDomain 才是四選一：technical | identity | preference | free_text
 
  範例：
    - "drift threshold 調到 0.78" → slotKey="memory:drift_threshold", slotValue=0.78, domain="technical"
-   - "老闆喜歡喝手沖咖啡" → slotKey="user:coffee_preference", slotValue="手沖咖啡", domain="preference"
+   - "老闆喜歡喝手沖咖啡" → slotKey="boss:coffee_preference", subject="boss", slotValue="手沖咖啡", domain="preference"
+   - "James 喜歡 Apex、John 喜歡 CS:GO" → 分別使用 slotKey="James:favorite_game"、slotKey="John:favorite_game"，subject 分別為 "James"、"John"
    - "我是三重人" → slotKey="identity:location", slotValue="三重", domain="identity"
    - "今天天氣很好" → 無結構化資訊
 
  輸出嚴格 JSON：
  {
-   "slotKey": "namespace:param_name 或空字串",
+   "slotKey": "subject:param_name 或空字串",
    "slotValue": "具體數值或字串或布林值，或 null",
+   "subject": "這條事實的主體字串；判斷不出時為 null，不准猜或填空字串",
+   "cardinality": "single | multi；判斷不出時為 null，不准猜或填空字串",
    "confidence": 0.0-1.0（抽取可靠性）,
    "extractionDomain": "technical | identity | preference | free_text",
    "isStructured": true或false
@@ -1049,13 +1090,17 @@ export class InboxWatcher {
  1. "confidence" 欄位只能是 0.0 到 1.0 之間的「數字」！
  2. 絕對不准輸出陣列（如 []）或字串形式的數字！如果真的無法評估，請一律輸出 0。
  3. "slotValue" 如果為空請寫 null，嚴禁使用空陣列 []。
+ 4. "cardinality" 只能是 "single"、"multi" 或 null；判斷不出來一律輸出 null，不准猜。
 
- 若文字不包含可結構化的參數，輸出：{"slotKey":"","slotValue":null,"confidence":0,"extractionDomain":"free_text","isStructured":false}`;
+ 請判斷：這個屬性在同一個主體身上，同一時間只會有一個值嗎？
+ - 單值範例：目前住的城市、目前職稱、最愛的球隊、drift threshold 的當前值
+ - 累積範例：去過哪些國家、養過哪些寵物、參加過哪些活動、讀過哪些書
+
+ 若文字不包含可結構化的參數，輸出：{"slotKey":"","slotValue":null,"subject":null,"confidence":0,"extractionDomain":"free_text","isStructured":false}`;
 
     try {
       const raw = await this.llm.generate(prompt, {
         purpose: 'slot-extraction',
-        maxTokens: 800,
       });
       if (!raw) return null;
 
@@ -1094,9 +1139,19 @@ export class InboxWatcher {
         parsed.isStructured = false;
       }
 
+      const normalizedCardinality = typeof parsed.cardinality === 'string'
+        ? parsed.cardinality.trim().toLowerCase()
+        : null;
+
       return {
         slotKey: parsed.slotKey ?? '',
         slotValue: parsed.slotValue ?? null,
+        subject: typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject.trim() : null,
+        cardinality: normalizedCardinality === 'single'
+          ? 'single'
+          : normalizedCardinality === 'multi'
+            ? 'multi'
+            : null,
         confidence: parsed.confidence ?? 0,
         extractionDomain: parsed.extractionDomain ?? 'free_text',
         isStructured: parsed.isStructured === true,
@@ -1111,20 +1166,30 @@ export class InboxWatcher {
    * checkSupersedes — 查詢同 slotKey 的所有 active 舊版本
    * @returns 被取代的舊 entry id 清單
    */
-  private async checkSupersedes(slotKey: string, _newId: string): Promise<string[]> {
+  private async checkSupersedes(slotKey: string, subject: string | null, cardinality: unknown = null): Promise<string[]> {
     if (!slotKey) return [];
     try {
       const existing = await this.store.searchBySlotKey(slotKey);
       // 只回傳 status = 'active' 的舊版本（排除已 deprecated）
       return existing
         .filter(e => {
-          try {
-            const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {});
-            // status 為 'active' 或未設定時視為有效
-            return meta.status === 'active' || meta.status == null;
-          } catch {
-            return true; // parse 失敗時保守視為有效
+          let meta: Record<string, any> = {};
+          if (typeof e.metadata === 'string') {
+            if (e.metadata.trim().length > 0) {
+              try {
+                const parsed = JSON.parse(e.metadata);
+                meta = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+              } catch {
+                return false;
+              }
+            }
+          } else {
+            meta = e.metadata || {};
           }
+          // status 為 'active' 或未設定時視為有效
+          if (meta.status !== 'active' && meta.status != null) return false;
+          return maySupersede(subject, getEffectiveSlotSubject(meta))
+            && mayCardinalitySupersede(cardinality, meta.slotCardinality);
         })
         .map(e => e.id);
     } catch (err) {

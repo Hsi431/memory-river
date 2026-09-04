@@ -1,8 +1,9 @@
-import type {
-  ContextMessage,
-  MemoryRiver,
-  RehydrateRequest,
-  SessionHint,
+import {
+  parseEntryIds,
+  type ContextMessage,
+  type MemoryRiver,
+  type RehydrateRequest,
+  type SessionHint,
 } from '@memory-river/core';
 import { z } from 'zod/v4';
 
@@ -29,7 +30,7 @@ export const TOOL_SCHEMAS = {
   }).strict(),
   memory_rehydrate: z.object({
     mode: z.enum(['entry_ids', 'keyword', 'time_range']),
-    entryIds: z.array(z.number().int()).optional(),
+    entryIds: z.union([z.array(z.number().int()), z.string()]).optional(),
     keyword: z.string().optional(),
     timestamp: z.string().optional(),
     windowMinutes: z.number().min(1).default(60),
@@ -127,10 +128,13 @@ export function createToolExecutor(river: MemoryRiver, sessionKey: string) {
     async memory_rehydrate(args: z.infer<typeof TOOL_SCHEMAS.memory_rehydrate>) {
       let request: RehydrateRequest;
       if (args.mode === 'entry_ids') {
+        const entryIds = typeof args.entryIds === 'string'
+          ? parseEntryIds(args.entryIds)
+          : args.entryIds ?? [];
         request = {
           mode: 'entry_ids',
           sessionKey: args.sessionKey ?? sessionKey,
-          entryIds: args.entryIds ?? [],
+          entryIds,
           bleed: args.bleed ?? 2,
           limit: args.limit,
         };

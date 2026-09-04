@@ -235,8 +235,12 @@ export function buildComparableTranscriptPairs(messages: ContextMessage[]): Comp
     if (!text || isSessionInitMessageForProbe(text)) continue;
 
     if (msg.role === 'user') {
-      pendingUser = text;
-      pendingTimestamp = msg.timestamp ?? Date.now();
+      if (pendingUser === null) {
+        pendingUser = text;
+        pendingTimestamp = msg.timestamp ?? Date.now();
+      } else {
+        pendingUser = `${pendingUser} ${text}`;
+      }
       continue;
     }
 
@@ -248,6 +252,14 @@ export function buildComparableTranscriptPairs(messages: ContextMessage[]): Comp
       });
       pendingUser = null;
     }
+  }
+
+  if (pendingUser !== null) {
+    pairs.push({
+      user: pendingUser,
+      assistant: '',
+      timestamp: pendingTimestamp,
+    });
   }
 
   return pairs;
@@ -274,12 +286,14 @@ export function buildComparableTranscriptCandidates(entries: RawTranscriptEntry[
   const mergedEntries: ComparableTranscriptPair[] = [];
   let pendingUserPrefix = '';
   let pendingEntryIds: number[] = [];
+  let pendingTimestamp = Date.now();
 
   for (const entry of normalizedEntries) {
     if (entry.assistant.trim().length === 0) {
       pendingUserPrefix = pendingUserPrefix
         ? `${pendingUserPrefix} ${entry.user}`.trim()
         : entry.user;
+      pendingTimestamp = entry.timestamp;
       if (typeof entry.entryId === 'number' && entry.entryId > 0) {
         pendingEntryIds.push(entry.entryId);
       }
@@ -302,6 +316,16 @@ export function buildComparableTranscriptCandidates(entries: RawTranscriptEntry[
 
     pendingUserPrefix = '';
     pendingEntryIds = [];
+  }
+
+  if (pendingUserPrefix) {
+    mergedEntries.push({
+      entryId: pendingEntryIds[pendingEntryIds.length - 1],
+      user: pendingUserPrefix,
+      assistant: '',
+      timestamp: pendingTimestamp,
+      mergedFromEntryIds: pendingEntryIds.length > 1 ? pendingEntryIds : undefined,
+    });
   }
 
   return mergedEntries;
@@ -1674,7 +1698,14 @@ async function callGeminiAPI(
   throw new Error('Invalid Gemini API response');
 }
 
-async function callDeepSeekAPI(apiKey: string, model: string, prompt: string, maxTokens: number = 8192): Promise<string> {
+class DeepSeekTruncatedResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeepSeekTruncatedResponseError';
+  }
+}
+
+async function callDeepSeekAPI(apiKey: string, model: string, prompt: string, maxTokens: number = 32768): Promise<string> {
   await sharedLLMRateLimiter.acquire('deepseek');
   const url = `https://api.deepseek.com/chat/completions`;
   const response = await fetch(url, {
@@ -1700,7 +1731,25 @@ async function callDeepSeekAPI(apiKey: string, model: string, prompt: string, ma
     throw new Error(`DeepSeek API error: ${response.status} — ${detail}`);
   }
   const data = await response.json() as any;
-  const messageContent = data.choices?.[0]?.message?.content;
+  const message = data.choices?.[0]?.message;
+  const messageContent = message?.content;
+  const reasoning = message?.reasoning_content;
+  const finishReason = data.choices?.[0]?.finish_reason;
+  if (finishReason === 'length' || finishReason === 'max_tokens') {
+    const contentLength = typeof messageContent === 'string'
+      ? messageContent.length
+      : Array.isArray(messageContent)
+        ? messageContent.reduce((length: number, part: any) => length + (
+          typeof part?.text === 'string' ? part.text.length
+            : typeof part?.content === 'string' ? part.content.length
+              : 0
+        ), 0)
+        : 0;
+    const reasoningLength = typeof reasoning === 'string' ? reasoning.length : 0;
+    throw new DeepSeekTruncatedResponseError(
+      `DeepSeek response truncated: finish_reason=${finishReason} completion_tokens=${data.usage?.completion_tokens ?? 'unknown'} content_length=${contentLength} reasoning_content_length=${reasoningLength}`,
+    );
+  }
   if (typeof messageContent === 'string' && messageContent.trim()) {
     return messageContent.trim();
   }
@@ -1719,7 +1768,6 @@ async function callDeepSeekAPI(apiKey: string, model: string, prompt: string, ma
   // Reasoning models (deepseek-v4-pro, and occasionally flash) can return an
   // empty message.content with the real output in reasoning_content. Fall back
   // to it; the JSON salvage logic downstream tolerates surrounding CoT text.
-  const reasoning = data.choices?.[0]?.message?.reasoning_content;
   if (typeof reasoning === 'string' && reasoning.trim()) {
     return reasoning.trim();
   }
@@ -1793,7 +1841,7 @@ export class ConcentratorAdapter implements LlmClient {
       codexReasoningEffortByPurpose: config.codexReasoningEffortByPurpose ?? {},
       codexWorkdir: config.codexWorkdir || os.homedir(),
       codexTimeoutMs: config.codexTimeoutMs ?? 120000,
-      maxTokens: config.maxTokens ?? 8192,
+      maxTokens: config.maxTokens ?? 32768,
       deepseekApiKey: config.deepseekApiKey || '',
       deepseekModel: config.deepseekModel ?? 'deepseek-v4-flash',
       sessionSummaryDir: config.sessionSummaryDir,
@@ -1985,6 +2033,7 @@ export class ConcentratorAdapter implements LlmClient {
     const newMessages: ContextMessage[] = [];
     const messagesToSummarize: ContextMessage[] = [];
     let hasModified = false;
+    let concentrationFailed = false;
     let capsuleText = '';   
 
       for (let i = 0; i < messages.length; i++) {
@@ -2164,6 +2213,9 @@ export class ConcentratorAdapter implements LlmClient {
         const notes: Array<Record<string, any>> = Array.isArray(parsedData.notes)
           ? parsedData.notes.map((item: unknown) => item && typeof item === 'object' ? item as Record<string, any> : {})
           : [];
+        if (!capsuleText.trim() && notes.length === 0) {
+          throw new Error('[ConcentratorAdapter] Concentration response contained no capsule or notes');
+        }
         const sourceEntryIds = sourceEntryIdsProbe?.matched ? sourceEntryIdsProbe.sourceEntryIds : [];
         const sourceEntryRange = sourceEntryIds.length > 0
           ? {
@@ -2255,7 +2307,13 @@ export class ConcentratorAdapter implements LlmClient {
 
       } catch (err) {
         console.error("[ConcentratorAdapter] Compaction failed:", err);
+        concentrationFailed = true;
+        if (err instanceof DeepSeekTruncatedResponseError) throw err;
       }
+    }
+
+    if (concentrationFailed) {
+      return { messages, wasConcentrated: false, processedThroughIndex: 0 };
     }
 
     let finalizedMessages = finalizeMessages(newMessages);
@@ -2406,6 +2464,7 @@ export class ConcentratorAdapter implements LlmClient {
       durationMs: Date.now() - startedAt,
       failureReason: classifyConcentratorFailure(lastError),
     }, shouldRecordMetric);
+    if (lastError instanceof DeepSeekTruncatedResponseError) throw lastError;
     throw new Error(`[${fnName}] 所有 provider 都失敗: ${lastError}`);
   }
 
