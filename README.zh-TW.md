@@ -97,7 +97,7 @@ flowchart LR
     NC["🌙 夜間整理"] -->|"合併重複、重評信心、<br/>清雜訊"| L
 ```
 
-新事實**取代**相近舊事實；矛盾被**標記 deprecated**，絕不默默並存；夜間有一趟把冗餘記憶**合併**；歸零記憶走 trash 保護路徑清掉。核心類別(identity/constraint/business/core_rule)、高重要性事實、技能膠囊**免於衰減** —— 記憶庫保持相關，而不是長成一堆雜訊。
+新事實**取代**舊事實需要結構證據 —— 同一個 slot、同一個主體、單值屬性；否則兩者並存,只把新的標成現行值。矛盾被**標記 deprecated**,絕不默默並存;夜間有一趟把冗餘記憶**合併**；歸零記憶走 trash 保護路徑清掉。核心類別(identity/constraint/business/core_rule)、高重要性事實、技能膠囊**免於衰減** —— 記憶庫保持相關，而不是長成一堆雜訊。
 
 ---
 
@@ -299,13 +299,13 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 | 雙層儲存 + WAL | RAM 目錄(可放 tmpfs)熱讀、資料目錄持久層、write-ahead log 含當機恢復 | `store/store-v4` |
 | 蒸餾管線 | 舊對話摘成膠囊 + 顆粒化筆記,經非同步 inbox 寫入 —— **寫入永不阻塞對話** | `distill/concentrator-adapter` + `pipeline/inbox-watcher` |
 | Transcript + rehydrate | 逐字原文歸檔 + byte-offset `.idx`;用 entry-id / 時間 / 關鍵字撈回原文 | `transcript/` |
-| Hybrid 檢索 | 向量 + 全文 BM25、RRF 融合、可選本地 rerank(CRAG 式 accept/partial/reject,調在 recall 安全端)、EntitySynergyMerger(NER 碎片搶救)、Structured Slot 去重、因果鏈上下文擴展 | `retrieval/retriever-v4` |
+| Hybrid 檢索 | 向量 + 全文 BM25、RRF 融合、可選本地 rerank(CRAG 式 accept/partial/reject,調在 recall 安全端)、EntitySynergyMerger(NER 碎片搶救)、版本關係標註、因果鏈上下文擴展 | `retrieval/retriever-v4` |
 | 知識圖譜 | 三元組(subject–relation–object)儲存,向量 + FTS 實體搜尋,供鉤子做語意查詢擴展 | `store/graph-store` |
 | 記憶代謝 | 健康度衰減 / 存取回血 / 歸零走 trash | `lifecycle/cleanup-engine` |
 | 夜間整理 | 週期性離線合併、壓縮相關記憶 | `lifecycle/night-consolidation` |
 | 聯想鉤子 | 記憶可帶觸發關鍵字,命中時連帶喚起相關記憶;命中成效有回饋閉環動態調權 | `cognition/hooks-engine` |
-| 因果 + 衝突 | 新事實取代相近舊事實;矛盾標記 deprecated 並記 `supersededBy` 追溯鏈 | `cognition/causal-engine` + `conflict-detector` |
-| Structured Slot | 寫入時抽結構化參數(slotKey/slotValue)+ 版本鏈;檢索時同 slot 只回最新 active | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
+| 因果 + 衝突 | 新事實要有結構證據才會把舊事實標 deprecated(slotKey 相同、主體非 null 且相等、cardinality 明確單值、parent 仍 active);否則只記血緣關係。矛盾標記 deprecated 並記 `supersededBy` 追溯鏈 | `cognition/causal-engine` + `conflict-detector` |
+| Structured Slot | 寫入時抽結構化參數(slotKey/slotValue)+ 版本鏈;檢索時保留所有版本,把較舊的標記出來而不是丟掉 | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
 | 全局工作記憶 (GWM) | 追蹤長對話主任務,embedding 漂移偵測,偏題時注入提醒拉回 | `cognition/global-working-memory` |
 | 技能膠囊 v2 | 顯式儲存的程序性知識,漸進式揭露:平時只注入一行索引,要用才載入完整步驟 | `engine` + `skills/` |
 | Ralph Loop | context 斷路器:連續失敗時修剪 / 截斷 context、注入警告,防 context 爆掉 | `cognition/ralph-core` |
@@ -325,19 +325,19 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 每一句逐字歸檔成 append-only JSONL,帶 byte-offset `.idx` sidecar(拿到 entryId 就 O(1) 定位),自動 rotation。膠囊/筆記記下它摘要了哪幾句原文(`sourceEntryIds`),所以失真記憶能被**還原**:`memory_rehydrate` 支援 entry-id(最精確)、時間窗、關鍵字(ranked-OR 匹配)三種模式。這是「lossy 記憶 + 主動補完」的底層(見上面 [兩段式檢索](#-兩段式檢索--主動補完gap-aware-rehydrate))。`transcript/`
 
 ### 🔍 Retriever — _多層篩選,只給最值得看的_
-召回不是單純向量搜尋:**Hybrid**(向量 + 全文 BM25 + RRF 融合)→ **Hooks 聯想**(+ 知識圖譜語意擴展)→ **EntitySynergyMerger**(當多條記憶各含部分事實時,用 NER + IDF-weighted Jaccard 把碎片拼回,純本地零 LLM token)→ **CRAG 品質審核**(accept/partial/reject,門檻調在 recall 安全端,只擋明顯不相關、不誤殺近義)→ **Structured Slot 去重**(同 slot 只留最新)→ **因果鏈擴展**。`retrieval/retriever-v4`
+召回不是單純向量搜尋:**Hybrid**(向量 + 全文 BM25 + RRF 融合)→ **Hooks 聯想**(+ 知識圖譜語意擴展)→ **EntitySynergyMerger**(當多條記憶各含部分事實時,用 NER + IDF-weighted Jaccard 把碎片拼回,純本地零 LLM token)→ **CRAG 品質審核**(accept/partial/reject,門檻調在 recall 安全端,只擋明顯不相關、不誤殺近義)→ **版本關係標註**(同一事實的較舊版本會被標記,不是丟掉)→ **因果鏈擴展**。`retrieval/retriever-v4`
 
 ### 📊 GraphStore — _知識圖譜三元組_
 把記憶裡的關係抽成 `subject–relation–object` 三元組獨立儲存(例:`Alice –is– CEO –of– ArtiMart`),三元組文字自動向量化做 ANN 語意搜尋、subject 欄位做 FTS 實體搜尋。檢索時供 Hooks 做語意查詢擴展,把相關實體一起拉進來。`store/graph-store`
 
 ### 🧬 Causal Engine — _記憶是因果鏈,不是碎片_
-新記憶寫入時判定它與既有記憶的關係:`UPDATE`(夠近 + 字面重疊 → 舊記憶標 deprecated、新記憶繼承 parentId)、`CAUSAL`(中等距離 → 建因果連結、兩筆共存)、`INDEPENDENT`(無關)。只做純函式判定,實際 update/deprecate 交給 inbox/StatusManager;門檻依 embedding 維度自動計算、同 category 自動放寬。`cognition/causal-engine`
+新記憶寫入時判定它與既有記憶的關係:`UPDATE`(夠近 + 字面重疊 → 新記憶繼承 parentId;舊記憶只有在具備結構證據時才會被標 deprecated —— 光靠向量相近會把「同一主題的下一次發生」讀成「同一事實的新版本」)、`CAUSAL`(中等距離 → 建因果連結、兩筆共存)、`INDEPENDENT`(無關)。只做純函式判定,實際 update/deprecate 交給 inbox/StatusManager;門檻依 embedding 維度自動計算、同 category 自動放寬。`cognition/causal-engine`
 
 ### ⚡ Conflict Detector — _像大腦一樣主動遺忘_
 模擬 retrieval-induced forgetting:只對高衝突類別(`preference`/`constraint`/`identity`/`decision`)觸發,寫入後掃同類相似記憶,LLM 判定語意衝突 → 衝突記憶標 deprecated 並記 `supersededBy` 追溯鏈。保守策略:判定失敗預設共存,不確定絕不刪。`cognition/conflict-detector`
 
 ### 🎯 Structured Slot — _精確參數不靠人記_
-寫入時自動抽結構化參數(例:「SSH port 改成 2222」→ `slotKey=technical:ssh_port, slotValue=2222`),信心夠才寫入、不夠降級為自由文本。同 slotKey 有版本鏈,舊值標 deprecated、新值 active;檢索時同 slot 只回最新 active,不會新舊並陳。`pipeline/inbox-watcher` + `retrieval/retriever-v4`
+寫入時自動抽結構化參數(例:「SSH port 改成 2222」→ `slotKey=technical:ssh_port, slotValue=2222`),信心夠才寫入、不夠降級為自由文本。同 slotKey 的版本鏈以主體與 cardinality 劃分作用域,一個人的 `favorite_game` 不會覆蓋另一個人的。檢索不會丟掉舊版本:它依血緣(或 slotKey 加上相符的主體)分組,把過時的那幾條標記出來,讓 agent 同時看到歷史與現行值,而不是一個被無聲截斷的視圖。新舊判定以血緣優先,其次是對話發生時間 —— 絕不用寫入庫的時間,那會被重新匯入弄反。`pipeline/inbox-watcher` + `retrieval/retriever-v4`
 
 ### 🎣 Hooks Engine — _觸景生情的聯想網路_
 不是關鍵字匹配,是 LLM 生成的**概念觸發器**(好鉤子:「報告撰寫規範」;爛鉤子:「報告」)。三級權重,有**品質回饋閉環**:鉤子觸發 → CRAG 審核結果回報 → 動態調權,長期低效的鉤子自動淘汰。`cognition/hooks-engine`
