@@ -18,6 +18,7 @@ function portFromEnv(): number {
 async function main(): Promise<void> {
   const config = configFromEnv();
   let lock: ServiceLock | null = null;
+  let pendingLock: Promise<ServiceLock> | null = null;
   let stopping = false;
   let river: ReturnType<typeof createRiverFromEnv>['river'] | null = null;
   let service: MemoryRiverHttpService | null = null;
@@ -31,7 +32,10 @@ async function main(): Promise<void> {
     await river?.stop().catch(error => {
       console.error('[mr-serve] river shutdown failed:', error);
     });
-    await lock?.release().catch(error => {
+    // A signal can land after the lockfile is on disk but before acquireServiceLock returns;
+    // wait for that acquisition so the lock it is about to hand back still gets released.
+    const heldLock = lock ?? await pendingLock?.catch(() => null) ?? null;
+    await heldLock?.release().catch(error => {
       console.error('[mr-serve] lock cleanup failed:', error);
     });
     if (exitCode !== undefined) process.exit(exitCode);
@@ -43,7 +47,8 @@ async function main(): Promise<void> {
   process.once('SIGTERM', () => void stop(143));
 
   try {
-    lock = await acquireServiceLock(config.dataDir);
+    pendingLock = acquireServiceLock(config.dataDir);
+    lock = await pendingLock;
   } catch (error) {
     console.error('[mr-serve] lock failed:', error instanceof Error ? error.message : error);
     process.exitCode = 1;
