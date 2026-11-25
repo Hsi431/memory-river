@@ -1,6 +1,6 @@
 {
   "name": "@memory-river/service",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Loopback HTTP daemon for the Memory River core engine.",
   "private": false,
   "license": "Apache-2.0",
@@ -47,7 +47,7 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@memory-river/adapter-mcp": "0.2.1",
-    "@memory-river/core": "0.2.9"
+    "@memory-river/adapter-mcp": "0.2.2",
+    "@memory-river/core": "0.2.10"
   }
 }

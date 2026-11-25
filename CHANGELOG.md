@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-25 — Core 0.2.10, Service 0.2.2, MCP adapter 0.2.2
+
+### Fixes
+
+- **Core:** LanceDB `query().toArray()` without `.limit()` returns only 10 rows. Every read that needs all rows now pages to the end: the SSD resync after an outage (0.2.9 restored at most 10 rows), hook-bearing memory evaluation, slot version lookups and graph lookups by memory (previously capped at 100). SSD resync gives up after 3 rounds of concurrent writes and stays pending for the next trigger.
+- **Core:** Engine no longer crashes at startup when `cleanupEngine` is omitted from the config; night consolidation cannot run twice at once; a stalled daily run no longer stops later runs from being scheduled.
+- **Service:** HTTP session keys are validated like the MCP adapter's; `/archive-transcript` rejects messages whose role is not `user` or `assistant`; `mr init` no longer sends the previous API key to a new embedding endpoint and keeps a custom Ollama URL when switching models.
+- **Dashboard:** Export and the memories, graph and slots views now include every row instead of the first 10.
+- CI rejects unbounded LanceDB `query().toArray()` calls (`scripts/check-lancedb-query-limits.sh`).
+
 ## 2026-11-25 — Core 0.2.9, Service 0.2.1, MCP adapter 0.2.1
 
 ### Highlights
