@@ -5,9 +5,11 @@ import { configFromEnv } from '../dist/config.js';
 
 test('configured LLM request timeout aborts an endpoint that never responds', async () => {
   const originalFetch = globalThis.fetch;
+  const originalProvider = process.env.MEMORY_RIVER_LLM_PROVIDER;
   const originalTimeout = process.env.MEMORY_RIVER_LLM_TIMEOUT_MS;
   const originalBaseUrl = process.env.MEMORY_RIVER_LLM_BASE_URL;
   const originalModel = process.env.MEMORY_RIVER_LLM_MODEL;
+  process.env.MEMORY_RIVER_LLM_PROVIDER = 'openai';
   process.env.MEMORY_RIVER_LLM_TIMEOUT_MS = '20';
   process.env.MEMORY_RIVER_LLM_BASE_URL = 'http://never-responds.test';
   process.env.MEMORY_RIVER_LLM_MODEL = 'test-model';
@@ -20,6 +22,7 @@ test('configured LLM request timeout aborts an endpoint that never responds', as
   } finally {
     clearInterval(keepAlive);
     globalThis.fetch = originalFetch;
+    if (originalProvider === undefined) delete process.env.MEMORY_RIVER_LLM_PROVIDER; else process.env.MEMORY_RIVER_LLM_PROVIDER = originalProvider;
     if (originalTimeout === undefined) delete process.env.MEMORY_RIVER_LLM_TIMEOUT_MS; else process.env.MEMORY_RIVER_LLM_TIMEOUT_MS = originalTimeout;
     if (originalBaseUrl === undefined) delete process.env.MEMORY_RIVER_LLM_BASE_URL; else process.env.MEMORY_RIVER_LLM_BASE_URL = originalBaseUrl;
     if (originalModel === undefined) delete process.env.MEMORY_RIVER_LLM_MODEL; else process.env.MEMORY_RIVER_LLM_MODEL = originalModel;

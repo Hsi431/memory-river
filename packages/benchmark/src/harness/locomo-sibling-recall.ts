@@ -69,6 +69,7 @@ interface SiblingRecallMetrics {
 }
 
 interface SiblingRecallResult {
+  diagnostic: string;
   metricLabel: string;
   description: string;
   metrics: SiblingRecallMetrics;
@@ -76,10 +77,11 @@ interface SiblingRecallResult {
   warnings: string[];
 }
 
-function usage(): void {
+export function usage(): void {
   console.error(
     'Usage: mr-bench locomo-sibling-recall --snapshot-dir DIR ' +
-    '[--conversation conv-26] [--category N default 1] [--k N] [--json]',
+    '[--conversation conv-26] [--category N default 1] [--k N] [--json]\n' +
+    'ORACLE_DIAGNOSTIC — 不是產品分數.',
   );
 }
 
@@ -330,6 +332,7 @@ export async function runLocomoSiblingRecall(options: SiblingRecallOptions): Pro
     .filter((value): value is number => value !== null);
 
   return {
+    diagnostic: 'ORACLE_DIAGNOSTIC — 不是產品分數',
     metricLabel: `SiblingRecall@${options.k}(memory_layer_direct)`,
     description:
       'Oracle/deterministic enumeration plan over memory layer only; bypasses the answer model and overstates product behavior.',
@@ -357,6 +360,8 @@ export async function runLocomoSiblingRecall(options: SiblingRecallOptions): Pro
 export function renderLocomoSiblingRecall(result: SiblingRecallResult): string {
   const { metrics } = result;
   const lines = [
+    result.diagnostic,
+    '',
     '# LoCoMo Sibling Recall',
     '',
     `${result.metricLabel}: ${pct(metrics.meanSiblingRecallAtK)} (${metrics.scoredQuestions} scored cat${metrics.category} questions)`,

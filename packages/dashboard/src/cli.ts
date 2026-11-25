@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { runEffectiveness, type EffectivenessOptions } from './effectiveness.js';
@@ -155,6 +156,9 @@ export async function runCli(input: string[]): Promise<number> {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (
+  process.argv[1] &&
+  await realpath(fileURLToPath(import.meta.url)) === await realpath(process.argv[1])
+) {
   process.exitCode = await runCli(process.argv.slice(2));
 }

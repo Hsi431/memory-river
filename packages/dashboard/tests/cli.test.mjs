@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
@@ -135,4 +136,23 @@ test('missing --db prints usage and exits 1', async () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /--db is required/);
   assert.match(result.stderr, /Usage:/);
+});
+
+test('mr-dash bin symlink invokes the CLI entry point', async () => {
+  const binDir = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-bin-'));
+  const binPath = path.join(binDir, 'mr-dash');
+  await symlink(path.join(packageDir, 'dist/cli.js'), binPath);
+  const stdout = [];
+  const stderr = [];
+
+  try {
+    const child = spawn(process.execPath, [binPath, '--help'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', chunk => stdout.push(chunk));
+    child.stderr.on('data', chunk => stderr.push(chunk));
+    const code = await new Promise(resolve => child.once('close', resolve));
+    assert.equal(code, 0);
+    assert.match(Buffer.concat(stderr).toString(), /Usage:/);
+  } finally {
+    await rm(binDir, { recursive: true, force: true });
+  }
 });

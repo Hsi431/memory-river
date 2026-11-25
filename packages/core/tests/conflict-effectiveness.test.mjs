@@ -147,7 +147,7 @@ test('candidate judged as no conflict records no_conflict', async () => {
     const oldId = 'old-pref-1';
     const { detector, calls } = makeDetector(store, {
       candidates: [makeCandidate(oldId)],
-      llm: { generate: async () => '共存' },
+      llm: { generate: async () => '{"conflict":false}' },
     });
 
     const result = await detector.detectAndResolve('new-1', 'new preference', 'preference');
@@ -168,7 +168,7 @@ test('conflict found records all four funnel events and resolution outcome', asy
     const oldId = 'old-pref-1';
     const { detector, calls } = makeDetector(store, {
       candidates: [makeCandidate(oldId)],
-      llm: { generate: async () => '衝突' },
+      llm: { generate: async () => '{"conflict":true}' },
       statusOk: true,
     });
 
@@ -216,7 +216,7 @@ test('events in one detect attempt share queryHash', async () => {
   await withTempStore('conflict-eff-queryhash-', async ({ store }) => {
     const { detector } = makeDetector(store, {
       candidates: [makeCandidate('old-pref-1')],
-      llm: { generate: async () => '衝突' },
+      llm: { generate: async () => '{"conflict":true}' },
     });
 
     await detector.detectAndResolve('new-1', 'new preference', 'preference');
@@ -245,7 +245,7 @@ test('business results stay unchanged for detector outcomes', async () => {
 
     const noConflict = makeDetector(store, {
       candidates: [makeCandidate('old-pref-1')],
-      llm: { generate: async () => '共存' },
+      llm: { generate: async () => '{"conflict":false}' },
     });
     assert.deepEqual(
       await noConflict.detector.detectAndResolve('new-no-conflict', 'new preference', 'preference'),
@@ -254,7 +254,7 @@ test('business results stay unchanged for detector outcomes', async () => {
 
     const conflict = makeDetector(store, {
       candidates: [makeCandidate('old-pref-2')],
-      llm: { generate: async () => '衝突' },
+      llm: { generate: async () => '{"conflict":true}' },
     });
     assert.deepEqual(
       await conflict.detector.detectAndResolve('new-conflict', 'new preference', 'preference'),

@@ -70,12 +70,14 @@ export function createTranscriptArchive(transcriptsDir: string) {
  * Map 保持插入順序，天然 LRU
  */
 const transcriptCache = new Map<string, RawTranscriptEntry[]>();
+const transcriptCacheSignatures = new Map<string, string>();
 let inMemoryCounter = 0;
 let counterLoaded = false;
 
 /** 給 plugin start 清狀態用（Phase 4-7） */
 function clearTranscriptCache(): void {
   transcriptCache.clear();
+  transcriptCacheSignatures.clear();
 }
 
 // ---------------------------------------------------------------
@@ -274,6 +276,17 @@ function getTranscriptPaths(filePath: string): string[] {
   return [filePath, ...rotated.map((file) => file.filePath)];
 }
 
+function getTranscriptFilesSignature(filePath: string): string {
+  return getTranscriptPaths(filePath).map((transcriptPath) => {
+    try {
+      const stats = fs.statSync(transcriptPath);
+      return `${transcriptPath}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}`;
+    } catch {
+      return `${transcriptPath}:missing`;
+    }
+  }).join('\n');
+}
+
 // ---------------------------------------------------------------
 // 內部工具：從 ContextMessage 提取可見文字
 // ---------------------------------------------------------------
@@ -408,25 +421,37 @@ function archiveSnapshot(identity: TranscriptIdentity, messages: ContextMessage[
     }
     const filePath = getTranscriptPath(identity.sessionKey);
     const cacheKey = identity.canonicalKey;
+    const cachedEntriesAtStart = transcriptCache.get(cacheKey);
+    const cachedSignatureAtStart = transcriptCacheSignatures.get(cacheKey);
+    const signatureAtStart = getTranscriptFilesSignature(filePath);
+    let cacheWasCurrent = cachedEntriesAtStart !== undefined
+      && cachedSignatureAtStart !== undefined
+      && cachedSignatureAtStart === signatureAtStart;
 
     const pendingEntries: PendingTranscriptEntry[] = [];
     let pendingUser: string | null = null;
     let pendingTimestamp: number = Date.now();
+    let pendingAssistant: string[] = [];
 
     for (const msg of messages) {
       const text = extractVisibleText(msg);
       if (!text || isSessionInitMessage(text)) continue;
 
       if (msg.role === 'user') {
+        if (pendingUser !== null) {
+          pendingEntries.push({
+            user: pendingUser,
+            assistant: pendingAssistant.join('\n\n'),
+            timestamp: pendingTimestamp,
+          });
+        }
         pendingUser = text;
         pendingTimestamp = msg.timestamp ?? Date.now();
-      } else if (msg.role === 'assistant' && pendingUser !== null) {
-        pendingEntries.push({
-          user: pendingUser,
-          assistant: text,
-          timestamp: pendingTimestamp,
-        });
-        pendingUser = null;
+        pendingAssistant = [];
+      } else if (msg.role === 'assistant' && pendingUser !== null && pendingAssistant.length === 0) {
+        // Only the first assistant reply is paired: joining later replies would change the dedup
+        // key of turns already archived, so re-archived snapshots would append duplicate entries.
+        pendingAssistant.push(text);
       }
     }
 
@@ -434,7 +459,7 @@ function archiveSnapshot(identity: TranscriptIdentity, messages: ContextMessage[
     if (pendingUser !== null) {
       pendingEntries.push({
         user: pendingUser,
-        assistant: '',
+        assistant: pendingAssistant.join('\n\n'),
         timestamp: pendingTimestamp,
       });
     }
@@ -443,6 +468,13 @@ function archiveSnapshot(identity: TranscriptIdentity, messages: ContextMessage[
 
     // 先檢查是否需要 rotation，避免 offset 計算到舊檔
     rotateIfNeeded(filePath);
+    if (cacheWasCurrent && getTranscriptFilesSignature(filePath) !== signatureAtStart) {
+      cacheWasCurrent = false;
+    }
+    if (!cacheWasCurrent && cachedEntriesAtStart !== undefined) {
+      transcriptCache.delete(cacheKey);
+      transcriptCacheSignatures.delete(cacheKey);
+    }
 
     const seenKeys = loadRecentDedupKeys(filePath, DEDUP_TAIL_LINES);
     const newEntries: RawTranscriptEntry[] = [];
@@ -498,8 +530,11 @@ function archiveSnapshot(identity: TranscriptIdentity, messages: ContextMessage[
     writeIdxWithFsync(filePath, idx);
 
     // 更新 cache（write-through）— Phase 4-2 起以 canonicalKey 為 key
-    const existing = transcriptCache.get(cacheKey) || [];
+    const existing = cacheWasCurrent ? transcriptCache.get(cacheKey) ?? [] : [];
     transcriptCache.set(cacheKey, [...existing, ...newEntries]);
+    if (cacheWasCurrent) {
+      transcriptCacheSignatures.set(cacheKey, getTranscriptFilesSignature(filePath));
+    }
 
     // LRU 上限檢查
     enforceCacheLimit(cacheKey);
@@ -529,16 +564,6 @@ function getRawTranscript(
 ): RawTranscriptEntry[] {
   const cacheKey = identity.canonicalKey;
   try {
-    // 優先查 cache（canonicalKey）
-    if (transcriptCache.has(cacheKey)) {
-      let entries = transcriptCache.get(cacheKey)!;
-      const oldestTimestamp = Math.min(...entries.map((entry) => entry.timestamp));
-      if (since === undefined || (entries.length > 0 && since >= oldestTimestamp)) {
-        if (since !== undefined) entries = entries.filter(e => e.timestamp >= since);
-        return entries.slice(limit ? -limit : undefined);
-      }
-    }
-
     // cache miss → 讀磁碟。Phase 4-4 漸進路徑：
     //   1) 優先 sessionKey 對應檔（與寫入端一致）
     //   2) sessionKey 不存在時試 sessionId 對應檔（過渡期相容）
@@ -562,6 +587,8 @@ function getRawTranscript(
       }
     }
     if (!filePath) {
+      transcriptCache.delete(cacheKey);
+      transcriptCacheSignatures.delete(cacheKey);
       if (!sessionKey && !sessionId) {
         console.warn(
           `[transcript-archive] getRawTranscript: sessionKey/sessionId both missing canonicalKey=${cacheKey}; cannot search disk`
@@ -570,18 +597,29 @@ function getRawTranscript(
       return [];
     }
 
+    const currentSignature = getTranscriptFilesSignature(filePath);
+    if (transcriptCache.has(cacheKey)
+      && transcriptCacheSignatures.get(cacheKey) === currentSignature) {
+      let entries = transcriptCache.get(cacheKey)!;
+      const oldestTimestamp = Math.min(...entries.map((entry) => entry.timestamp));
+      if (since === undefined || (entries.length > 0 && since >= oldestTimestamp)) {
+        if (since !== undefined) entries = entries.filter(e => e.timestamp >= since);
+        return entries.slice(limit ? -limit : undefined);
+      }
+    }
+
     const entries: RawTranscriptEntry[] = [];
     for (const transcriptPath of getTranscriptPaths(filePath)) {
       try {
         const raw = fs.readFileSync(transcriptPath, 'utf-8');
-        for (const line of raw.split('\n').filter(l => l.trim())) {
+        for (const [lineIndex, line] of raw.split('\n').entries()) {
+          if (!line.trim()) continue;
           try {
             entries.push(JSON.parse(line) as RawTranscriptEntry);
-          } catch {
-            // Legacy 格式（無 entryId）→ 補一個假的 entryId = -1
-            console.warn(`[transcript-archive] legacy_transcript_fallback: canonicalKey=${cacheKey}, no entryId`);
-            const legacy = JSON.parse(line) as { user: string; assistant: string; timestamp: number };
-            entries.push({ entryId: -1, ...legacy } as RawTranscriptEntry);
+          } catch (err: any) {
+            console.warn(
+              `[transcript-archive] malformed JSON skipped: file=${path.basename(transcriptPath)} line=${lineIndex + 1} error=${err?.message ?? err}`
+            );
           }
         }
       } catch {
@@ -593,6 +631,11 @@ function getRawTranscript(
     // 寫入 cache（canonicalKey）
     transcriptCache.set(cacheKey, entries);
     enforceCacheLimit(cacheKey);
+    if (getTranscriptFilesSignature(filePath) === currentSignature) {
+      transcriptCacheSignatures.set(cacheKey, currentSignature);
+    } else {
+      transcriptCacheSignatures.delete(cacheKey);
+    }
 
     // 時間過濾
     let result = since !== undefined ? entries.filter(e => e.timestamp >= since) : entries;

@@ -319,3 +319,14 @@ export class CrossEncoderReranker {
     return Array.from(logits.data as Float32Array | Float64Array | number[]).map(Number);
   }
 }
+
+export async function scoreRerankPool(
+  reranker: Pick<CrossEncoderReranker, 'scorePairs'>,
+  query: string,
+  pool: Array<{ entry: { text: string } }>,
+): Promise<{ logits: number[]; timing: ScoreBatchTiming }> {
+  return reranker.scorePairs(pool.map(result => ({
+    query,
+    passage: result.entry.text,
+  })));
+}

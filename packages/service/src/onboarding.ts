@@ -33,10 +33,17 @@ type Prompt = (question: string) => Promise<string>;
 function parseEmbedding(answer: string, defaults: OnboardingConfig['embedding']): OnboardingConfig['embedding'] {
   if (!answer.trim()) return defaults;
   const [provider, ...parts] = answer.trim().split(/\s+/);
-  if (provider === 'ollama') return { ...defaults, provider, model: parts.join(' ') || defaults.model };
+  if (provider === 'ollama') {
+    const providerDefaults = defaultOnboardingConfig().embedding;
+    const model = parts.join(' ') || (provider === defaults.provider ? defaults.model : providerDefaults.model);
+    const base = provider === defaults.provider && model === defaults.model ? defaults : providerDefaults;
+    return { ...base, provider, model };
+  }
   if (provider === 'openai' && parts.length >= 2) {
     const [baseUrl, model, apiKey] = parts;
-    return { ...defaults, provider, baseUrl, model, ...(apiKey ? { apiKey } : {}) };
+    const providerDefaults = defaultOnboardingConfig().embedding;
+    const base = provider === defaults.provider && model === defaults.model ? defaults : providerDefaults;
+    return { ...base, provider, baseUrl, model, ...(apiKey ? { apiKey } : {}) };
   }
   throw new Error(INIT_TEXT.embeddingError);
 }

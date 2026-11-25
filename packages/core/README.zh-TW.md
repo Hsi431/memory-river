@@ -25,7 +25,7 @@
 
 ## 會代謝的記憶
 
-記憶不是寫一次就不動的列。它們**會活**:健康度隨時間衰減、被存取就回血;新事實會**取代**相近的舊事實;矛盾會被**標記並 deprecated**,而不是默默並存;夜間有一趟把冗餘記憶**合併**;歸零的記憶走 trash 保護路徑清掉。核心類別、高重要性事實、技能膠囊免於衰減 — 所以記憶庫保持相關,而不是長成一堆雜訊。
+記憶不是寫一次就不動的列。每次 sweep 按 `0.15 × 經過小時 × max(0.2, 1 − 0.01 × accessCount)` 點線性扣健康度；健康度 100 且未存取時約 28 天歸零，非 skill 的 active v2 膠囊以四分之一速度衰減。核心類別(`identity`、`preference`、`constraint`、`business`、`decision`、`core_rule`)、重要度 ≥ 0.75(動態膠囊除外)與 skill capsule 不參與衰減。會排入 boost 的 Retriever 路徑及符合條件的非核心技能載入加分；`engine.recall()` 搜尋並重排結果，但不加分。衝突偵測限四類並要求結構化 JSON 布林判定。夜間 merge 只有通過 subject/cardinality 相容檢查才標記來源 deprecated；獨立的 `deprecated` 決策也涵蓋過期或冗餘。健康度歸零及超期 `trashed` 記憶會先寫入 JSON trash，保留 7 天再刪除。SSD 寫入失敗會在 SSD 恢復時從 RAM 補同步；啟動時 RAM→SSD 只新增或更新列。WAL 是 at-least-once、非 exactly-once，仍須備份 `dataDir`。
 
 ## 怎麼蓋起來的
 
@@ -36,10 +36,10 @@
 | Transcript + rehydrate | 逐字原文歸檔 + byte-offset `.idx`;用 entry-id、時間、關鍵字撈回確切原文 | `transcript/` |
 | Hybrid 檢索 | 向量 + 全文 BM25、RRF 融合、可選的本地 cross-encoder rerank(CRAG 式 accept/partial/reject,調在 recall 安全端)、EntitySynergyMerger(NER 碎片搶救)、Structured Slot 去重、因果鏈上下文擴展 | `retrieval/retriever-v4` |
 | 知識圖譜 | 三元組(subject–relation–object)儲存,向量 + FTS 實體搜尋,供鉤子做語意查詢擴展 | `store/graph-store` |
-| 記憶代謝 | 健康度隨時間衰減、被存取就回血;歸零的記憶走 trash 保護路徑清掉 | `lifecycle/cleanup-engine` |
+| 記憶代謝 | 線性衰減；特定 Retriever 路徑與技能載入加分；歸零及超期 trashed 經 7 天 JSON trash | `lifecycle/cleanup-engine` + `store/store-v4` |
 | 夜間整理 | 週期性離線合併、壓縮相關記憶 | `lifecycle/night-consolidation` |
 | 聯想鉤子 | 記憶可帶觸發關鍵字,命中時連帶喚起相關記憶;命中成效有回饋閉環動態調權 | `cognition/hooks-engine` |
-| 因果 + 衝突 | 新事實取代相近舊事實;矛盾被標記並 deprecated 並記 `supersededBy` 追溯鏈 | `cognition/causal-engine` + `conflict-detector` |
+| 因果 + 衝突 | 衝突偵測限四類並讀取結構化 JSON 判定；merge 的 deprecated 須通過 subject/cardinality 相容檢查 | `cognition/causal-engine` + `conflict-detector` |
 | Structured Slot | 寫入時抽結構化參數(slotKey/slotValue)+ 版本鏈;檢索時同 slot 只回最新 active | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
 | 全局工作記憶 (GWM) | 追蹤長對話主任務,embedding 漂移偵測,偏題時注入提醒拉回 | `cognition/global-working-memory` |
 | 技能膠囊 v2 | 顯式儲存的程序性知識,漸進式揭露:平時只注入一行索引,要用才載入完整步驟 | `engine` + `skills/` |
@@ -143,7 +143,7 @@ await river.skills.save({
 
 - **漸進式揭露**:`assembleContext` 只注入一行索引(`【git-release】觸發: … → skill_load("git-release")`);完整步驟在 agent 呼叫 `skills.load` 之前是零 token 成本。
 - **誠實的使用統計**:只有 `load` 會 +1 `usageCount` — 被注入不算被使用。
-- **生命週期**:技能的衰減速度是一般記憶的 1/4,每次 load 回血;沒人用的技能會慢慢淡出,不會永遠佔著索引名額。
+- **生命週期**:active v2 膠囊衰減速度是一般記憶的 1/4,載入技能會加健康度;沒人用的技能會慢慢淡出,不會永遠佔著索引名額。
 - **確定性品質閘**:格式不合的定義會被拒收,所有違規一次列完 — 不用 LLM 評審、不做沉默修正。
 
 ## 依賴 Ports

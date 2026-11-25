@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { MemorySearchResult } from '@memory-river/core';
 
-import { CrossEncoderReranker, PRIMARY_RERANKER_MODEL } from './cross-encoder-reranker.js';
+import { CrossEncoderReranker, PRIMARY_RERANKER_MODEL, scoreRerankPool } from './cross-encoder-reranker.js';
 import { loadLocomo, type LocomoConversation } from './locomo.js';
 import {
   buildEvidenceEntryMap,
@@ -528,10 +528,7 @@ class BgeCrossScorer implements Scorer {
   async score(query: string, pool: MemorySearchResult[]): Promise<{ scores: number[]; latencyMs: number }> {
     activeHfArm = 'bge-reranker-v2-m3 cross';
     try {
-      const { logits, timing } = await this.reranker.scorePairs(pool.map(result => ({
-        query,
-        passage: result.entry.text,
-      })));
+      const { logits, timing } = await scoreRerankPool(this.reranker, query, pool);
       return { scores: logits, latencyMs: timing.timedMs };
     } finally {
       activeHfArm = null;

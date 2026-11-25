@@ -38,8 +38,8 @@ Most AI memory systems are designed like a **database** — write rows, query ro
 | One flat pile of embeddings, write-once | **Three timescales**: a recap that fades, notes that persist, transcript that's permanent |
 | Compaction = truncate the old turns | Compaction = **distill** into a capsule + granular notes; raw turns archived verbatim, nothing dropped |
 | Lossy is lossy — detail is gone | Lossy memories carry **pointers back to the source**; the agent can `rehydrate` exact numbers / names / dates |
-| Memories never change | Memories **decay, refresh on access, and get superseded**; contradictions are flagged & deprecated, not silently kept |
-| Grows dirtier forever | **Nightly consolidation** merges duplicates; dead memories leave through a trash-protected path |
+| Memories never change | Health decays linearly; selected retrieval paths and skill loads boost it; contradictions are checked in four categories |
+| Grows dirtier forever | **Nightly consolidation** merges related memories and may independently deprecate stale or redundant ones; deleted rows pass through trash |
 | Embeddings need a cloud API | **Fully local** Ollama embeddings — zero cloud dependency, self-hostable |
 | Black box: why did it return *this*? | **Auditable**: every distilled claim traces back to the turns that produced it |
 
@@ -56,7 +56,7 @@ flowchart LR
     C["💬 Conversation"] -->|"watermark crossed"| D["💧 Distill"]
     C -->|"every turn, verbatim"| T["📜 Transcript — long term<br/>append-only + byte-offset index<br/>the permanent record"]
     D --> CAP["🩹 Capsule — short term<br/>recap injected into the next prompt<br/>starts low-health, fades fast"]
-    D --> N["📝 Notes — medium term<br/>granular, self-contained facts<br/>persist; decay slowly, heal on access"]
+    D --> N["📝 Notes — medium term<br/>granular, self-contained facts<br/>persist; decay slowly"]
     CAP -.->|"sourceEntryIds"| T
     N -.->|"sourceEntryIds"| T
     N ==>|"recall (automatic, cheap)"| A["🤖 Agent"]
@@ -84,12 +84,12 @@ The leverage is the agent's **judgment**: treat recall as *candidate evidence*, 
 
 ## 🧬 Memory that metabolizes
 
-Memories aren't write-once rows — they **live**. Health follows a forgetting curve: a hit **heals** a memory, long disuse makes it **decay**, and the more often it's accessed the slower it decays:
+Memories aren't write-once rows — they **live**. Health decays linearly by `0.15 × elapsed hours × max(0.2, 1 − 0.01 × accessCount)` points per sweep. From 100 health with no accesses, that is about 28 days to zero; the access factor can slow it, and active non-skill v2 capsules decay at one quarter speed. Core categories (`identity`, `preference`, `constraint`, `business`, `decision`, `core_rule`), memories with importance ≥ 0.75 (except dynamic capsules), and skill capsules are excluded from decay. Retrieval only boosts health in Retriever paths that enqueue a boost (accepted/partial candidates and entity-synergy merges); loading an eligible non-core skill also boosts it. `engine.recall()` searches and reranks without boosting health:
 
 ```mermaid
 flowchart LR
     W["✍️ Written<br/>full health"] --> L["🫀 Alive"]
-    L -->|"accessed → heals,<br/>decays slower over time"| L
+    L -->|"selected retrieval / skill load → boost;<br/>access count slows decay"| L
     L -->|"long disuse → decays"| Z["💤 Health = 0"]
     L -->|"contradicted / superseded"| DEP["🪦 Deprecated<br/>supersededBy chain"]
     Z --> TR["🗑️ Trash<br/>retention window"]
@@ -97,7 +97,7 @@ flowchart LR
     NC["🌙 Night consolidation"] -->|"merge duplicates,<br/>re-score, prune junk"| L
 ```
 
-A newer fact **supersedes** an older one only on structural evidence — same slot, same subject, single-valued; otherwise both stay and the newer one is simply marked as current. Contradictions are **flagged and deprecated**, never silently kept; a nightly pass **merges** redundant memories; dead ones leave through a trash-protected path. Core categories (identity / constraint / business / core_rule), high-importance facts, and skill capsules are **immune to decay** — so the store stays relevant instead of growing into noise.
+A newer fact can supersede a close older one; conflict detection only checks `preference`, `constraint`, `identity`, and `decision`, and accepts a structured JSON `{"conflict": boolean}` verdict. Night consolidation marks the source `deprecated` when a merge is applied, after subject/cardinality compatibility checks; its separate `deprecated` decision can also mark stale or redundant memories without a merge. Memories reaching zero and expired `trashed` rows are copied through JSON trash and retained for 7 days before purge. An SSD write failure is retried by syncing RAM after SSD recovery; startup RAM-to-SSD sync adds or updates rows and does not erase SSD-only rows. WAL recovery is at-least-once, not exactly-once; back up `dataDir` and do not treat this as protection against loss of the data directory and WAL.
 
 ---
 
@@ -251,13 +251,13 @@ LoCoMo scores are highly sensitive to the evaluation protocol. Public numbers of
 - no oracle evidence
 - no hidden benchmark-specific retry loop
 - end-to-end answers through a live agent loop
-- memory writes disabled during evaluation (`MR_OTTER_READONLY=1`), so a run can be resumed without the agent mutating the memory base mid-benchmark; both arms of the comparison above ran under the same setting
+- memory writes disabled during evaluation (`MR_OTTER_READONLY` defaults to read-only; set it to `0` to enable writes), so a run can be resumed without the agent mutating the memory base mid-benchmark; both arms of the comparison above ran under the same setting
 
 This is intentionally stricter than the common leaderboard-style setup. It measures Memory River as a general memory engine embedded in a real agent, not as a benchmark-specialized answering pipeline.
 
 We have also reported a mem0-style LLM-as-judge score on the exact same generated answers. This does not change the agent, the retrieved context, or the model output — only the judge rubric changes, and the rubric alone can move the score dramatically: on the earlier run, the same cat1 answers scored **34.8%** under the strict no-partial-credit judge and **84.8%** under the mem0-style rubric. This is why LoCoMo numbers should not be compared without the full evaluation protocol.
 
-Under the mem0-style rubric (the prompt is copied verbatim from `mem0ai/memory-benchmarks`), Memory River reached **79.9%** on cat1–4 on the earlier Gemini-judged run, with judge parse failures (17 of 1,539) counted as wrong. **That rubric pass has not been re-run since the judge and the retrieval fix changed, so we are not restating it as a current number.** We treat it as a public-compatible comparison figure, not the primary engineering score — the primary number remains the stricter end-to-end score.
+Under the mem0-style rubric (the prompt is copied verbatim from `mem0ai/memory-benchmarks`), Memory River reached **79.9%** on cat1–4 on the earlier Gemini-judged run. That historical scoring counted all 17 judge parse failures as wrong (17 of 1,539); current reporting separates parse failures. **That rubric pass has not been re-run since the judge and the retrieval fix changed, so we are not restating it as a current number.** We treat it as a public-compatible comparison figure, not the primary engineering score — the primary number remains the stricter end-to-end score.
 
 The point isn't a leaderboard trick — it's to make the tradeoff visible:
 
@@ -299,13 +299,13 @@ What's actually guaranteed, and what isn't — read this before trusting it with
 | Dual-tier store + WAL | RAM dir (tmpfs-friendly) for hot reads, data dir for durability, write-ahead log with crash recovery | `store/store-v4` |
 | Distillation pipeline | Old turns are summarized into a capsule + granular notes, written through an async inbox — **writes never block the conversation** | `distill/concentrator-adapter` + `pipeline/inbox-watcher` |
 | Transcript + rehydrate | Verbatim turn archive with a byte-offset `.idx`; recover exact turns by entry-id / time / keyword | `transcript/` |
-| Hybrid retrieval | Vector + full-text BM25, RRF fusion, optional local rerank (CRAG-style accept/partial/reject, tuned recall-safe), EntitySynergyMerger (NER fragment rescue), version-relation annotation, causal-chain expansion | `retrieval/retriever-v4` |
+| Hybrid retrieval | Vector + full-text BM25, RRF fusion, optional local rerank (CRAG-style accept/partial/reject, tuned recall-safe), EntitySynergyMerger (NER fragment rescue), structured-slot dedup, causal-chain expansion | `retrieval/retriever-v4` |
 | Knowledge graph | Triple (subject–relation–object) store with vector + FTS entity search, used to expand hook/query coverage | `store/graph-store` |
-| Memory metabolism | Health decays over time, refreshes on access; dead memories cleaned up through a trash-protected path | `lifecycle/cleanup-engine` |
+| Memory metabolism | Linear health decay; Retriever paths and skill loads boost health; zero-health and expired trashed rows use 7-day JSON trash retention | `lifecycle/cleanup-engine` + `store/store-v4` |
 | Night consolidation | Periodic offline pass that merges and compresses related memories | `lifecycle/night-consolidation` |
 | Associative hooks | Memories carry trigger keywords that fire related recalls; a feedback loop reweights hooks by hit quality | `cognition/hooks-engine` |
-| Causal + conflict | A newer fact deprecates an older one only with structural evidence (matching slotKey, matching non-null subject, cardinality positively single, parent still active); otherwise it only records the lineage. Contradictions are flagged and deprecated with a `supersededBy` chain | `cognition/causal-engine` + `conflict-detector` |
-| Structured slots | Extracts structured params (slotKey/slotValue) at write time with a version chain; retrieval keeps every version and labels the older ones instead of dropping them | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
+| Causal + conflict | Conflict detection checks `preference` / `constraint` / `identity` / `decision` using structured JSON verdicts; merge deprecations require subject/cardinality compatibility | `cognition/causal-engine` + `conflict-detector` |
+| Structured slots | Extracts structured params (slotKey/slotValue) at write time with a version chain; retrieval returns only the latest active per slot | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
 | Global Working Memory (GWM) | Tracks the long-conversation task; embedding drift detection nudges the agent back on topic | `cognition/global-working-memory` |
 | Skill capsules v2 | Explicitly saved procedures with progressive disclosure: a one-line index is injected, full steps load on demand | `engine` + `skills/` |
 | Ralph Loop | Context circuit-breaker: on repeated failures it trims/truncates context and injects warnings to keep context from blowing up | `cognition/ralph-core` |
@@ -325,19 +325,19 @@ When a conversation passes a **dynamic watermark** (adaptive by conversation mod
 Every turn is archived to an append-only JSONL with a byte-offset `.idx` sidecar (O(1) seek once you have an entryId) and automatic rotation. Capsules and notes record which turns they summarized (`sourceEntryIds`), so a lossy memory can be **restored**: `memory_rehydrate` supports entry-id (most precise), time window, and keyword (ranked-OR) modes. This is the floor under "lossy memory + gap-aware recall" (see [Two-pass retrieval](#-two-pass-retrieval--gap-aware-rehydrate)). `transcript/`
 
 ### 🔍 Retriever — _layered filtering, only what's worth reading_
-Recall isn't a plain vector search: **Hybrid** (vector + full-text BM25 + RRF fusion) → **Hooks** (associative + knowledge-graph semantic expansion) → **EntitySynergyMerger** (when several memories each hold part of a fact, NER + IDF-weighted Jaccard stitches the fragments back together — pure local, zero LLM tokens) → **CRAG quality gate** (accept/partial/reject, tuned to the recall-safe side: only blocks the clearly-irrelevant, never culls near-matches) → **version-relation annotation** (older versions of the same fact are labelled, not dropped) → **causal-chain expansion**. `retrieval/retriever-v4`
+Recall isn't a plain vector search: **Hybrid** (vector + full-text BM25 + RRF fusion) → **Hooks** (associative + knowledge-graph semantic expansion) → **EntitySynergyMerger** (when several memories each hold part of a fact, NER + IDF-weighted Jaccard stitches the fragments back together — pure local, zero LLM tokens) → **CRAG quality gate** (accept/partial/reject, tuned to the recall-safe side: only blocks the clearly-irrelevant, never culls near-matches) → **structured-slot dedup** (latest active per slot) → **causal-chain expansion**. `retrieval/retriever-v4`
 
 ### 📊 GraphStore — _knowledge as triples_
 Relationships in memories are extracted into `subject–relation–object` triples and stored separately (e.g. `Alice –is CEO of– ArtiMart`); triple text is auto-vectorized for ANN semantic search and the subject field gets FTS entity search. At retrieval time it feeds the Hooks engine's semantic query expansion, pulling related entities in together. `store/graph-store`
 
 ### 🧬 Causal Engine — _memory is a causal chain, not loose fragments_
-On write, it classifies a new memory's relation to existing ones: `UPDATE` (close enough + lexical overlap → new memory inherits `parentId`; the old one is only deprecated when there is structural evidence for it — vector proximity alone reads "the next occurrence of a topic" as "a newer version of the same fact"), `CAUSAL` (medium distance → causal link, both coexist), or `INDEPENDENT` (unrelated). It only makes the pure-function decision; the actual update/deprecate is handed to the inbox / StatusManager. Thresholds are computed from embedding dimensionality and auto-relaxed within the same category. `cognition/causal-engine`
+On write, it classifies a new memory's relation to existing ones: `UPDATE` (close enough + lexical overlap → old memory deprecated, new one inherits `parentId`), `CAUSAL` (medium distance → causal link, both coexist), or `INDEPENDENT` (unrelated). It only makes the pure-function decision; the actual update/deprecate is handed to the inbox / StatusManager. Thresholds are computed from embedding dimensionality and auto-relaxed within the same category. `cognition/causal-engine`
 
 ### ⚡ Conflict Detector — _forgetting on purpose, like a brain_
-Modeled on retrieval-induced forgetting: it only fires for high-conflict categories (`preference` / `constraint` / `identity` / `decision`), scans similar same-category memories after a write, and an LLM judges semantic conflict → the conflicting memory is deprecated with a `supersededBy` chain. Conservative by design: if the judgment fails it defaults to coexistence, and it never deletes on uncertainty. `cognition/conflict-detector`
+Modeled on retrieval-induced forgetting: it only fires for `preference` / `constraint` / `identity` / `decision`, scans similar same-category memories after a write, and accepts a structured JSON object with boolean `conflict` from the LLM → the conflicting memory is deprecated with a `supersededBy` chain. Invalid output or a failed judgment defaults to coexistence. `cognition/conflict-detector`
 
 ### 🎯 Structured Slot — _exact params you don't have to remember_
-On write it auto-extracts structured params (e.g. "change the SSH port to 2222" → `slotKey=technical:ssh_port, slotValue=2222`), gated on confidence (low confidence degrades to free text). Each slotKey keeps a version chain, scoped by subject and cardinality so one person's `favorite_game` cannot overwrite another's. Retrieval does not drop the older versions: it groups them by lineage (or by slotKey plus a matching subject) and labels the stale ones, so the agent sees the history and which value is current rather than a silently truncated view. Recency comes from lineage first, then the conversation timestamp — never from ingest time, which reindexing inverts. `pipeline/inbox-watcher` + `retrieval/retriever-v4`
+On write it auto-extracts structured params (e.g. "change the SSH port to 2222" → `slotKey=technical:ssh_port, slotValue=2222`), gated on confidence (low confidence degrades to free text). Each slotKey keeps a version chain — old value deprecated, new value active — and retrieval returns only the latest active per slot, so stale and fresh values never appear side by side. `pipeline/inbox-watcher` + `retrieval/retriever-v4`
 
 ### 🎣 Hooks Engine — _an associative net, reminded by context_
 Not keyword matching — LLM-generated **concept triggers** (good hook: "report writing spec"; bad hook: "report"). Three weight tiers, with a **quality feedback loop**: a hook fires → the CRAG outcome is reported back → its weight is adjusted, and hooks that stay ineffective are pruned. Associations that help get strengthened; ones that mislead get weakened — fire together, wire together. `cognition/hooks-engine`
@@ -346,10 +346,10 @@ Not keyword matching — LLM-generated **concept triggers** (good hook: "report 
 Tracks the long conversation's main goal and detects topic drift each turn via embedding cosine, injecting a nudge to pull the agent back when it wanders; injection control prevents per-turn repetition and the state persists across restarts. Tools: `gwm_on/off/status/update`. `cognition/global-working-memory`
 
 ### 🫀 Health System — _memory has a lifecycle_
-Based on the forgetting curve: a hit **heals** a memory, long disuse makes it **decay**, and the more often it's accessed the slower it decays. Memories that hit zero are soft-deleted to trash, retained for a window, then permanently purged. Core categories (identity / constraint / business / core_rule), high-importance facts, and skill capsules are **immune to decay**. Decay runs as a batch + per-row WAL, then auto-`optimize()` restores read performance. `lifecycle/cleanup-engine`
+Health decays linearly by `0.15 × elapsed hours × max(0.2, 1 − 0.01 × accessCount)` points per sweep (100 health reaches zero in about 28 days with no accesses); active non-skill v2 capsules decay at one quarter speed. Core categories (`identity` / `preference` / `constraint` / `business` / `decision` / `core_rule`), importance ≥ 0.75 except dynamic capsules, and skill capsules are excluded from decay. Retriever paths that enqueue boosts and eligible non-core skill loads raise health; `engine.recall()` searches and reranks without boosting. At zero, rows pass through JSON trash for 7 days before purge; expired `trashed` rows follow the same route. `lifecycle/cleanup-engine` + `store/store-v4`
 
 ### 🌙 Night Consolidation — _the AI's sleep_
-A periodic offline pass scans the day's memories and an LLM decides `keep` / `merge` / `delete` / `update` per item; merges and updates commit through a batch single-row WAL, and every LLM decision is **runtime-validated before it is applied**. Precise rescheduling avoids timer drift. This is consolidation during sleep — duplicates merge, contradictions are deprecated, junk is pruned, confidence is re-scored. `lifecycle/night-consolidation`
+A periodic offline pass scans memories and an LLM decides `keep` / `merge` / `delete` / `update` / `deprecated` per item; merge deprecates the source only after subject/cardinality compatibility checks. The separate `deprecated` action means stale or redundant and is not limited to merge. Decisions are runtime-validated before application. `lifecycle/night-consolidation`
 
 ### 🧹 Cleanup Engine — _time-driven garbage collection_
 **Time-driven first** (a daily schedule plus a startup recovery run if too long has passed since the last sweep), with session-end as a secondary trigger — so it still works for long conversations that never fire a session-end. Handles the decay sweep, soft-delete, and trash-expiry purge. `lifecycle/cleanup-engine`

@@ -30,8 +30,8 @@ test('MCP rehydrate accepts equivalent range and number-array entryIds', async (
   const fromArray = await executor.memory_rehydrate(entryIds(ids));
   const fromMultipleRanges = await executor.memory_rehydrate(entryIds('336-340,348-353'));
 
-  assert.deepEqual(fromRange, fromArray);
-  assert.deepEqual(fromMultipleRanges.map(entry => entry.entryId), [
+  assert.deepEqual(fromRange.result, fromArray.result);
+  assert.deepEqual(fromMultipleRanges.result.map(entry => entry.entryId), [
     336, 337, 338, 339, 340, 348, 349, 350, 351, 352, 353,
   ]);
   assert.deepEqual(calls.map(call => call.entryIds), [ids, ids, [
@@ -46,6 +46,6 @@ test('MCP rehydrate treats invalid range strings as empty results without throwi
     await assert.doesNotReject(async () => {
       result = await executor.memory_rehydrate(entryIds(value));
     });
-    assert.deepEqual(result, []);
+    assert.deepEqual(result.result, []);
   }
 });

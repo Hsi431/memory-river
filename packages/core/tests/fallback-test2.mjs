@@ -2,7 +2,7 @@
  * Fallback Capsule Test v2
  * 直接呼叫 buildFallbackCapsule (TypeScript private → JS public)
  */
-import { ConcentratorAdapter } from './dist/concentrator-adapter.js';
+import { ConcentratorAdapter } from '../dist/distill/concentrator-adapter.js';
 
 // Mock messages matching ContextMessage structure
 const mockMessages = [

@@ -37,7 +37,7 @@ test('normal recall injects additionalContext with the service block', async () 
     const output = await handleRecallInject({
       session_id: 'session-1',
       prompt: 'please remember this implementation detail',
-    }, { fetchImpl, tmpDir });
+    }, { fetchImpl, tmpDir, env: {} });
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'http://127.0.0.1:4791/recall');
@@ -99,11 +99,11 @@ test('dedupe prevents injecting the same entry twice in one session', async () =
     const first = await handleRecallInject({
       session_id: 'session-1',
       prompt: 'please recall this once',
-    }, { fetchImpl, tmpDir });
+    }, { fetchImpl, tmpDir, env: {} });
     const second = await handleRecallInject({
       session_id: 'session-1',
       prompt: 'please recall this once',
-    }, { fetchImpl, tmpDir });
+    }, { fetchImpl, tmpDir, env: {} });
 
     assert.ok(first);
     assert.equal(second, null);
@@ -111,4 +111,20 @@ test('dedupe prevents injecting the same entry twice in one session', async () =
   } finally {
     await bestEffortRm(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('MEMORY_RIVER_RECALL=off skips recall without calling the daemon', async () => {
+  let called = false;
+  const fetchImpl = async () => {
+    called = true;
+    return responseJson({ results: [], block: '' });
+  };
+
+  const output = await handleRecallInject({
+    session_id: 'session-off',
+    prompt: 'please remember this implementation detail',
+  }, { fetchImpl, env: { MEMORY_RIVER_RECALL: 'off' } });
+
+  assert.equal(output, null);
+  assert.equal(called, false);
 });

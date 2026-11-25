@@ -69,7 +69,7 @@ test('reads surviving rotations when the primary file is absent and skips an unr
   assert.deepEqual(archive.getRawTranscript(identity, entry.timestamp).map((row) => row.entryId), [7]);
 });
 
-test('limits cache after merging rotated transcript files from disk', (t) => {
+test('limits cache after merging rotated files and invalidates it after file removal', (t) => {
   const transcriptsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-river-transcript-cache-limit-'));
   const archive = createTranscriptArchive(transcriptsDir);
   const identity = { canonicalKey: 'cache-limit', sessionKey: 'cache-limit', sessionId: 'cache-limit' };
@@ -93,6 +93,7 @@ test('limits cache after merging rotated transcript files from disk', (t) => {
 
   fs.writeFileSync(rotatedPath, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
   assert.equal(archive.getRawTranscript(identity).length, 5);
-  fs.rmSync(rotatedPath);
   assert.deepEqual(archive.getRawTranscript(identity, timestamp + 1).map((entry) => entry.entryId), [2, 3, 4, 5]);
+  fs.rmSync(rotatedPath);
+  assert.deepEqual(archive.getRawTranscript(identity, timestamp + 1), []);
 });

@@ -12,6 +12,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { MemoryStore } from "../store/store-v4.js";
 
+type GraphStoreInvalidator = {
+  deleteTriplesByMemoryId(memoryId: string): Promise<void>;
+};
+
 export interface CleanupEngineConfig {
   enabled: boolean;
   decayDays: number;
@@ -51,31 +55,47 @@ export interface CleanupRunResult {
     createdAtByDay: Record<string, number>;
   };
   dryRun: boolean;
+  /** 因為已有另一輪清理在執行而被跳過（沒有動到任何資料）。 */
+  skipped?: boolean;
 }
 
 export class CleanupEngine {
   private static _instance: CleanupEngine | null = null;
+
+  /**
+   * 同一時間只允許一輪清理。
+   * daily-schedule 與 session-end 曾在 0.8 秒內雙觸發，兩份 Optimize 並行
+   * 把整台機器的記憶體吃光（2026-09-16 死機，LanceDB 留下 307 個截斷的版本檔）。
+   */
+  private inFlight: Promise<CleanupRunResult> | null = null;
 
   private readonly trashPath: string;
   private readonly trashRetentionDays: number;
   private readonly enableTrashAutoPurge: boolean;
   private readonly useTrash: boolean;
   private readonly dryRun: boolean;
+  private graphStore?: GraphStoreInvalidator;
 
   constructor(
     private store: MemoryStore,
     private config: CleanupEngineConfig,
+    graphStore?: GraphStoreInvalidator,
   ) {
     this.trashPath = config.trashPath;
     this.trashRetentionDays = config.trashRetentionDays ?? 7;
     this.enableTrashAutoPurge = config.enableTrashAutoPurge ?? true;
     this.useTrash = config.useTrash ?? true;
     this.dryRun = config.dryRun ?? false;
+    this.graphStore = graphStore;
 
     // 確保 trash 目錄存在（idempotent）
     if (!fs.existsSync(this.trashPath)) {
       fs.mkdirSync(this.trashPath, { recursive: true });
     }
+  }
+
+  setGraphStore(graphStore: GraphStoreInvalidator | null): void {
+    this.graphStore = graphStore ?? undefined;
   }
 
   static getInstance(): CleanupEngine {
@@ -105,28 +125,49 @@ export class CleanupEngine {
    */
   async runSmartCleanup(source: string = 'manual', options: CleanupRunOptions = {}): Promise<CleanupRunResult> {
     if (!this.config.enabled) {
-      return {
-        deleted: 0,
-        updated: 0,
-        wouldDelete: 0,
-        wouldDecay: 0,
-        deferredDelete: 0,
-        deferredDecay: 0,
-        deleteCandidateSummary: { count: 0, firstId: null, lastId: null, minCreatedAt: null, maxCreatedAt: null, createdAtByDay: {} },
-        dryRun: true,
-      };
+      return this.noopResult({ dryRun: true });
     }
 
+    if (this.inFlight) {
+      console.warn(`[CleanupEngine] run skipped: another cleanup is still in progress, source=${source}`);
+      return this.noopResult({ dryRun: options.dryRunOverride ?? this.dryRun, skipped: true });
+    }
+
+    const run = this.runSmartCleanupInner(source, options);
+    this.inFlight = run;
+    try {
+      return await run;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  private noopResult({ dryRun, skipped }: { dryRun: boolean; skipped?: boolean }): CleanupRunResult {
+    return {
+      deleted: 0,
+      updated: 0,
+      wouldDelete: 0,
+      wouldDecay: 0,
+      deferredDelete: 0,
+      deferredDecay: 0,
+      deleteCandidateSummary: { count: 0, firstId: null, lastId: null, minCreatedAt: null, maxCreatedAt: null, createdAtByDay: {} },
+      dryRun,
+      ...(skipped ? { skipped: true } : {}),
+    };
+  }
+
+  private async runSmartCleanupInner(source: string, options: CleanupRunOptions): Promise<CleanupRunResult> {
     const effectiveDryRun = options.dryRunOverride ?? this.dryRun;
     const result = await this.store.decayMemories(5, this.config.deleteBelow, {
       coreCategories: this.config.coreCategories,
       coreImportanceThreshold: this.config.coreImportanceThreshold,
       skillCapsuleProtection: this.config.skillCapsuleProtection ?? true,
       dryRun: effectiveDryRun,
-      deleteWith: this.useTrash ? this.delete.bind(this) : undefined,
+      deleteWith: this.deleteForDecay.bind(this),
       maxDelete: options.maxDelete,
       maxDecay: options.maxDecay,
     });
+    const expiredTrashedDeleted = effectiveDryRun ? 0 : await this.deleteExpiredTrashed();
 
     console.log(
       `[CleanupEngine] decayMemories: protected=${result.coreProtected} wouldDecay=${result.wouldDecay} wouldDelete=${result.wouldDelete}, source=${source}`
@@ -147,7 +188,7 @@ export class CleanupEngine {
     }
 
     return {
-      deleted: result.deleted,
+      deleted: result.deleted + expiredTrashedDeleted,
       updated: result.decayed,
       wouldDelete: result.wouldDelete,
       wouldDecay: result.wouldDecay,
@@ -162,22 +203,61 @@ export class CleanupEngine {
   // 回收桶（Trash）管理
   // ═══════════════════════════════════════════════════════════
 
+  private async deleteExpiredTrashed(): Promise<number> {
+    const queryAll = (this.store as any).queryAll;
+    if (typeof queryAll !== 'function') return 0;
+
+    const cutoff = Date.now() - this.trashRetentionDays * 24 * 60 * 60 * 1000;
+    let deletedCount = 0;
+    const entries = await queryAll.call(this.store, 10000);
+    for (const entry of entries) {
+      let metadata: Record<string, any>;
+      try {
+        metadata = typeof entry.metadata === 'string'
+          ? JSON.parse(entry.metadata || '{}')
+          : (entry.metadata || {});
+      } catch {
+        continue;
+      }
+      if ((metadata.status ?? entry.status) !== 'trashed') continue;
+      const trashedAt = Number(metadata.trashedAt ?? entry.updatedAt ?? entry.createdAt);
+      if (!Number.isFinite(trashedAt) || trashedAt >= cutoff) continue;
+      if (await this.delete(entry.id)) deletedCount++;
+    }
+    return deletedCount;
+  }
+
   /**
    * 刪除記憶：先搬到回收桶，再從 LanceDB 移除。
    * 檔名格式：{id}_{timestamp}.json（含完整 entry 內容）
    */
+  private async deleteForDecay(id: string): Promise<boolean> {
+    return this.deleteMemory(id, this.useTrash);
+  }
+
   async delete(id: string): Promise<boolean> {
+    return this.deleteMemory(id, true);
+  }
+
+  private async deleteMemory(id: string, moveToTrash: boolean): Promise<boolean> {
     const entry = await this.store.getById(id, true);
     if (!entry) return false;
 
-    // 把完整 entry 寫入 trash
-    const timestamp = Date.now();
-    const trashFilename = `${id}_${timestamp}.json`;
-    const trashFilePath = path.join(this.trashPath, trashFilename);
+    if (moveToTrash) {
+      // 把完整 entry 寫入 trash
+      const timestamp = Date.now();
+      const trashFilename = `${id}_${timestamp}.json`;
+      const trashFilePath = path.join(this.trashPath, trashFilename);
 
-    fs.writeFileSync(trashFilePath, JSON.stringify(entry, null, 2), "utf-8");
-    console.log(`[Cleanup] Memory ${id.slice(0, 8)} moved to trash: ${trashFilename} (retained for ${this.trashRetentionDays} days)`);
+      fs.writeFileSync(trashFilePath, JSON.stringify(entry, null, 2), "utf-8");
+      console.log(`[Cleanup] Memory ${id.slice(0, 8)} moved to trash: ${trashFilename} (retained for ${this.trashRetentionDays} days)`);
+    }
 
+    try {
+      await this.graphStore?.deleteTriplesByMemoryId(id);
+    } catch (err: any) {
+      console.warn(`[Cleanup] graph triple cleanup failed for ${id.slice(0, 8)}: ${err?.message ?? err}`);
+    }
     // 從 LanceDB 真正刪除
     await this.store.delete(id);
     return true;

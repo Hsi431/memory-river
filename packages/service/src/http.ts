@@ -15,6 +15,9 @@ const { version: SERVICE_VERSION } = JSON.parse(
   await readFile(new URL('../package.json', import.meta.url), 'utf8'),
 ) as { version: string };
 
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+const MAX_ARCHIVE_BODY_BYTES = 64 * 1024 * 1024;
+
 export interface MemoryRiverHttpServiceOptions {
   river: MemoryRiver;
   dataDir: string;
@@ -41,15 +44,60 @@ function sendError(response: ServerResponse, status: number, message: string): v
   sendJson(response, status, { error: message });
 }
 
-function requestPath(request: IncomingMessage): string {
-  return new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false;
+  const match = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/i.exec(host);
+  return match !== null && (match[1] === undefined || Number(match[1]) <= 65535);
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (url.hostname.toLowerCase() === '127.0.0.1' ||
+        url.hostname.toLowerCase() === 'localhost' ||
+        url.hostname.toLowerCase() === '[::1]') &&
+      url.username === '' && url.password === '' && url.pathname === '/' &&
+      url.search === '' && url.hash === '';
+  } catch {
+    return false;
   }
+}
+
+export function isAllowedRequest(
+  headers: Pick<IncomingMessage['headers'], 'host' | 'origin'>,
+): boolean {
+  if (!isLoopbackHost(headers.host)) return false;
+  const origin = headers.origin;
+  return origin === undefined || isLoopbackOrigin(origin);
+}
+
+export function requestPath(request: IncomingMessage): string | null {
+  try {
+    return new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+  } catch {
+    return null;
+  }
+}
+
+class BodyTooLargeError extends Error {}
+
+async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let tooLarge = false;
+  for await (const chunk of request) {
+    if (tooLarge) continue;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > maxBytes) {
+      tooLarge = true;
+      chunks.length = 0;
+      continue;
+    }
+    chunks.push(buffer);
+  }
+  if (tooLarge) throw new BodyTooLargeError();
   const raw = Buffer.concat(chunks).toString('utf8');
   return raw.trim() ? JSON.parse(raw) : {};
 }
@@ -62,6 +110,15 @@ function asObject(body: unknown): Record<string, unknown> {
 
 function numberOrDefault(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function boundedNumberOrDefault(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return Math.min(maximum, Math.max(minimum, numberOrDefault(value, fallback)));
 }
 
 function sessionFromBody(body: Record<string, unknown>, sessionKey: string): SessionHint {
@@ -90,15 +147,23 @@ async function recallBlock(
 async function routeRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  options: Required<Pick<MemoryRiverHttpServiceOptions, 'river' | 'dataDir' | 'sessionKey' | 'version' | 'startedAt'>>,
+  options: Required<Pick<MemoryRiverHttpServiceOptions, 'river' | 'sessionKey' | 'version' | 'startedAt'>>,
 ): Promise<void> {
+  if (!isAllowedRequest(request.headers)) {
+    sendError(response, 403, 'forbidden host or origin');
+    return;
+  }
+
   const path = requestPath(request);
+  if (path === null) {
+    sendError(response, 400, 'invalid request URL');
+    return;
+  }
 
   if (request.method === 'GET' && path === '/health') {
     sendJson(response, 200, {
       ok: true,
       version: options.version,
-      dataDir: options.dataDir,
       uptimeSec: Math.floor((Date.now() - options.startedAt) / 1000),
     });
     return;
@@ -109,10 +174,21 @@ async function routeRequest(
     return;
   }
 
+  const contentType = request.headers['content-type']?.split(';', 1)[0].trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    sendError(response, 415, 'content type must be application/json');
+    return;
+  }
+
   let body: Record<string, unknown>;
   try {
-    body = asObject(await readJsonBody(request));
-  } catch {
+    const bodyLimit = path === '/archive-transcript' ? MAX_ARCHIVE_BODY_BYTES : MAX_REQUEST_BODY_BYTES;
+    body = asObject(await readJsonBody(request, bodyLimit));
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      sendError(response, 413, 'request body too large');
+      return;
+    }
     sendError(response, 400, 'invalid JSON');
     return;
   }
@@ -120,7 +196,7 @@ async function routeRequest(
   try {
     if (path === '/recall') {
       const query = typeof body.query === 'string' ? body.query : '';
-      const limit = numberOrDefault(body.limit, 5);
+      const limit = boundedNumberOrDefault(body.limit, 5, 1, 100);
       const results = await options.river.recall(query, limit);
       sendJson(response, 200, {
         results,
@@ -148,8 +224,8 @@ async function routeRequest(
         entryIds: typeof body.entryIds === 'string'
           ? parseEntryIds(body.entryIds)
           : Array.isArray(body.entryIds) ? body.entryIds.filter(Number.isInteger) : [],
-        bleed: numberOrDefault(body.bleed, 2),
-        limit: numberOrDefault(body.limit, 10),
+        bleed: boundedNumberOrDefault(body.bleed, 2, 0, 20),
+        limit: boundedNumberOrDefault(body.limit, 10, 1, 100),
       };
       sendJson(response, 200, await options.river.rehydrate(requestBody));
       return;
@@ -175,13 +251,14 @@ export function createMemoryRiverHttpServer(
   const startedAt = options.startedAt ?? Date.now();
   const routeOptions = {
     river: options.river,
-    dataDir: options.dataDir,
     sessionKey: options.sessionKey,
     version: options.version ?? SERVICE_VERSION,
     startedAt,
   };
   return createServer((request, response) => {
-    void routeRequest(request, response, routeOptions);
+    void routeRequest(request, response, routeOptions).catch(() => {
+      if (!response.headersSent) sendError(response, 500, 'internal server error');
+    });
   });
 }
 

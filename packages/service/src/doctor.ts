@@ -3,6 +3,7 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 
 import {
+  configFromEnv,
   onboardingConfigPath,
   readOnboardingConfig,
   type OnboardingConfig,
@@ -38,6 +39,7 @@ export const DOCTOR_TEXT = {
 } as const;
 
 type CheckResult = { ok: boolean; detail: string; hint: string; critical: boolean };
+const DOCTOR_FETCH_TIMEOUT_MS = 10_000;
 
 export interface DoctorDependencies {
   readConfig: () => OnboardingConfig | null;
@@ -62,6 +64,7 @@ async function defaultEmbeddingProbe(config: OnboardingConfig): Promise<number> 
       'content-type': 'application/json',
       ...(!isOllama && config.embedding.apiKey ? { authorization: `Bearer ${config.embedding.apiKey}` } : {}),
     },
+    signal: AbortSignal.timeout(DOCTOR_FETCH_TIMEOUT_MS),
     body: JSON.stringify(isOllama
       ? { model: config.embedding.model, prompt: 'memory-river doctor' }
       : { model: config.embedding.model, input: 'memory-river doctor' }),
@@ -81,14 +84,16 @@ async function defaultLlmProbe(config: OnboardingConfig): Promise<void> {
     : 'https://api.deepseek.com');
   const model = config.concentration.model ?? (isGemini ? 'gemini-2.5-flash-lite' : 'deepseek-v4-flash');
   const url = isGemini
-    ? endpoint(baseUrl, `/models/${model}:generateContent?key=${config.concentration.apiKey}`)
+    ? endpoint(baseUrl, `/models/${model}:generateContent`)
     : endpoint(baseUrl, '/chat/completions');
   const response = await fetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      ...(isGemini ? { 'x-goog-api-key': config.concentration.apiKey } : {}),
       ...(!isGemini ? { authorization: `Bearer ${config.concentration.apiKey}` } : {}),
     },
+    signal: AbortSignal.timeout(DOCTOR_FETCH_TIMEOUT_MS),
     body: JSON.stringify(isGemini
       ? { contents: [{ parts: [{ text: 'ping' }] }], generationConfig: { maxOutputTokens: 1 } }
       : { model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
@@ -96,14 +101,39 @@ async function defaultLlmProbe(config: OnboardingConfig): Promise<void> {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
-async function defaultPortCheck(): Promise<boolean> {
-  const port = Number.parseInt(process.env.MR_SERVE_PORT ?? '4791', 10);
-  if (!Number.isInteger(port) || port < 0 || port > 65535) return false;
-  return new Promise(resolve => {
+interface PortCheckDependencies {
+  canListen: (port: number) => Promise<boolean>;
+  fetchImpl: typeof fetch;
+}
+
+async function canListen(port: number): Promise<boolean> {
+  return await new Promise(resolve => {
     const server = net.createServer();
     server.once('error', () => resolve(false));
     server.listen({ host: '127.0.0.1', port }, () => server.close(() => resolve(true)));
   });
+}
+
+async function isMemoryRiverService(port: number, fetchImpl: typeof fetch): Promise<boolean> {
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json() as { ok?: unknown; version?: unknown };
+    return body.ok === true && typeof body.version === 'string';
+  } catch {
+    return false;
+  }
+}
+
+export async function defaultPortCheck(
+  port = Number.parseInt(process.env.MR_SERVE_PORT ?? '4791', 10),
+  dependencies: Partial<PortCheckDependencies> = {},
+): Promise<boolean> {
+  if (!Number.isInteger(port) || port < 0 || port > 65535) return false;
+  if (await (dependencies.canListen ?? canListen)(port)) return true;
+  return isMemoryRiverService(port, dependencies.fetchImpl ?? fetch);
 }
 
 async function defaultDataDirCheck(dataDir: string): Promise<boolean> {
@@ -129,8 +159,24 @@ function defaultWalCheck(dataDir: string): Promise<boolean> {
 }
 
 function defaultDependencies(configPath?: string): DoctorDependencies {
+  const resolvedConfigPath = configPath ?? onboardingConfigPath();
   return {
-    readConfig: () => readOnboardingConfig(configPath ?? onboardingConfigPath()),
+    readConfig: () => {
+      if (!readOnboardingConfig(resolvedConfigPath)) return null;
+      const config = configFromEnv(resolvedConfigPath);
+      return {
+        dataDir: config.dataDir,
+        storageMode: config.storageMode,
+        embedding: {
+          provider: config.embeddingProvider,
+          model: config.embeddingModel,
+          baseUrl: config.ollamaUrl,
+          apiKey: config.embeddingApiKey,
+          dimensions: config.embeddingDimensions,
+        },
+        concentration: config.concentration,
+      };
+    },
     probeEmbedding: defaultEmbeddingProbe,
     probeLlm: defaultLlmProbe,
     getShmFreeBytes: getDevShmFreeBytes,

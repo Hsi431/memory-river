@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 
 import {
@@ -32,16 +33,28 @@ export interface DashboardResponse {
   status: number;
   contentType: string;
   body: unknown;
+  headers?: Record<string, string>;
+}
+
+interface DashboardRequestHeaders {
+  host?: string;
+  origin?: string;
 }
 
 function jsonValue(value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value;
 }
 
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
+function sendJson(
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): void {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
+    ...headers,
   });
   response.end(JSON.stringify(body, (_key, value) => jsonValue(value)));
 }
@@ -81,6 +94,32 @@ function combineConditions(conditions: string[]): string | null {
   return conditions.length > 0 ? conditions.join(' AND ') : null;
 }
 
+function compareStableValues(left: unknown, right: unknown): number {
+  if (left === right) return 0;
+  if (left === null || left === undefined) return -1;
+  if (right === null || right === undefined) return 1;
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  const leftValue = String(left);
+  const rightValue = String(right);
+  return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+}
+
+function stablePage(
+  rows: Record<string, unknown>[],
+  columns: string[],
+  page: PageOptions,
+): Record<string, unknown>[] {
+  return rows
+    .sort((left, right) => {
+      for (const column of columns) {
+        const result = compareStableValues(left[column], right[column]);
+        if (result !== 0) return result;
+      }
+      return 0;
+    })
+    .slice(page.offset, page.offset + page.limit);
+}
+
 function mapMemory(row: Record<string, unknown>): Record<string, unknown> {
   const metadata = parseMetadata(row.metadata);
   const health = parseMetadata(metadata.health);
@@ -117,7 +156,8 @@ async function getMemories(dbPath: string, params: URLSearchParams): Promise<Rec
   const table = await openRequiredTable(db, dbPath, 'memories');
   let query = table.query();
   if (where) query = query.where(where);
-  const rows = await query.limit(page.limit).offset(page.offset).toArray() as Record<string, unknown>[];
+  const matchingRows = await query.toArray() as Record<string, unknown>[];
+  const rows = stablePage(matchingRows, ['id'], page);
   return {
     ...page,
     total: await table.countRows(where ?? undefined),
@@ -135,7 +175,8 @@ async function getGraph(dbPath: string, params: URLSearchParams): Promise<Record
   const table = await openRequiredTable(db, dbPath, 'graph_triples');
   let query = table.query();
   if (where) query = query.where(where);
-  const rows = await query.limit(page.limit).offset(page.offset).toArray() as Record<string, unknown>[];
+  const matchingRows = await query.toArray() as Record<string, unknown>[];
+  const rows = stablePage(matchingRows, ['subject', 'relation', 'object', 'sourceMemoryId', 'createdAt'], page);
   return {
     ...page,
     total: await table.countRows(where ?? undefined),
@@ -154,11 +195,10 @@ async function getSlots(dbPath: string, params: URLSearchParams): Promise<Record
   const where = '`slotKey` IS NOT NULL AND `slotKey` != \'\'';
   const db = await connectDb(dbPath);
   const table = await openRequiredTable(db, dbPath, 'memories');
-  const rows = await table.query()
+  const matchingRows = await table.query()
     .where(where)
-    .limit(page.limit)
-    .offset(page.offset)
     .toArray() as Record<string, unknown>[];
+  const rows = stablePage(matchingRows, ['id'], page);
   return {
     ...page,
     total: await table.countRows(where),
@@ -605,16 +645,67 @@ const UI_HTML = String.raw`<!doctype html>
 </body>
 </html>`;
 
+function isLoopbackHost(host: string | undefined): boolean {
+  if (!host) return false;
+  const match = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/i.exec(host);
+  return match !== null && (match[1] === undefined || Number(match[1]) <= 65535);
+}
+
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname.toLowerCase();
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '[::1]') &&
+      url.username === '' && url.password === '' && url.pathname === '/' &&
+      url.search === '' && url.hash === '';
+  } catch {
+    return false;
+  }
+}
+
+export function isAllowedDashboardRequest(headers: DashboardRequestHeaders): boolean {
+  if (!isLoopbackHost(headers.host)) return false;
+  return headers.origin === undefined || isLoopbackOrigin(headers.origin);
+}
+
+function inlineHashes(matches: Iterable<RegExpMatchArray>): string {
+  return [...matches]
+    .map(match => `'sha256-${createHash('sha256').update(match[1] ?? '').digest('base64')}'`)
+    .join(' ');
+}
+
+const DASHBOARD_SECURITY_HEADERS = {
+  'content-security-policy': [
+    "default-src 'none'",
+    `script-src ${inlineHashes(UI_HTML.matchAll(/<script>([\s\S]*?)<\/script>/g))}`,
+    `style-src ${inlineHashes(UI_HTML.matchAll(/<style>([\s\S]*?)<\/style>/g))}`,
+    "connect-src 'self'",
+    "img-src 'self' data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+  ].join('; '),
+  'x-content-type-options': 'nosniff',
+};
+
 export function createDashboardServer(dbPath: string): Server {
   return createServer(async (request, response) => {
-    const result = await handleDashboardRequest(dbPath, request.method ?? 'GET', request.url ?? '/');
+    const result = await handleDashboardRequest(
+      dbPath,
+      request.method ?? 'GET',
+      request.url ?? '/',
+      request.headers,
+    );
     if (result.contentType.startsWith('application/json')) {
-      sendJson(response, result.status, result.body);
+      sendJson(response, result.status, result.body, result.headers);
       return;
     }
     response.writeHead(result.status, {
       'content-type': result.contentType,
       'cache-control': 'no-store',
+      ...result.headers,
     });
     response.end(String(result.body));
   });
@@ -624,23 +715,49 @@ export async function handleDashboardRequest(
   dbPath: string,
   method: string,
   requestUrl: string,
+  requestHeaders: DashboardRequestHeaders = { host: '127.0.0.1' },
 ): Promise<DashboardResponse> {
+  if (!isAllowedDashboardRequest(requestHeaders)) {
+    return {
+      status: 403,
+      contentType: 'application/json; charset=utf-8',
+      body: { error: 'forbidden host or origin' },
+      headers: DASHBOARD_SECURITY_HEADERS,
+    };
+  }
+
   try {
     const url = new URL(requestUrl, 'http://127.0.0.1');
     if (url.pathname.startsWith('/api/')) {
       if (method !== 'GET') {
-        return { status: 405, contentType: 'application/json; charset=utf-8', body: { error: 'method not allowed' } };
+        return {
+          status: 405,
+          contentType: 'application/json; charset=utf-8',
+          body: { error: 'method not allowed' },
+          headers: DASHBOARD_SECURITY_HEADERS,
+        };
       }
       return {
         status: 200,
         contentType: 'application/json; charset=utf-8',
         body: await apiResponse(dbPath, url),
+        headers: DASHBOARD_SECURITY_HEADERS,
       };
     }
     if (method !== 'GET') {
-      return { status: 405, contentType: 'text/plain; charset=utf-8', body: 'Method not allowed' };
+      return {
+        status: 405,
+        contentType: 'text/plain; charset=utf-8',
+        body: 'Method not allowed',
+        headers: DASHBOARD_SECURITY_HEADERS,
+      };
     }
-    return { status: 200, contentType: 'text/html; charset=utf-8', body: UI_HTML };
+    return {
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: UI_HTML,
+      headers: DASHBOARD_SECURITY_HEADERS,
+    };
   } catch (error) {
     const status = typeof error === 'object' && error !== null && 'statusCode' in error
       ? Number(error.statusCode)
@@ -651,6 +768,7 @@ export async function handleDashboardRequest(
       status,
       contentType: 'application/json; charset=utf-8',
       body: { error: error instanceof Error ? error.message : String(error) },
+      headers: DASHBOARD_SECURITY_HEADERS,
     };
   }
 }

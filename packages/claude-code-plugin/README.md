@@ -19,6 +19,8 @@ packages/claude-code-plugin/
 
 Set `MEMORY_RIVER_URL` to override the default `http://127.0.0.1:4791`.
 
+Set `MEMORY_RIVER_RECALL=off` to disable recall injection while keeping `SessionEnd` archiving.
+
 ## Install (local marketplace)
 
 The repo root ships `.claude-plugin/marketplace.json`, so the checkout itself is a marketplace:

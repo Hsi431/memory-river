@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import os from 'node:os';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 
 import {
   ConcentratorAdapter,
@@ -11,7 +14,7 @@ import {
 const codexConfig = {
   model: 'gpt-5.6-luna',
   reasoningEffort: 'low',
-  workdir: os.homedir(),
+  workdir: path.join(os.tmpdir(), 'memory-river-codex-provider'),
   timeoutMs: 120000,
 };
 
@@ -46,7 +49,7 @@ test('throws when codex stdout contains no parseable JSON', () => {
   assert.throws(() => parseCodexOutput('hook: Stop\nno structured result'), /parseable JSON/);
 });
 
-test('assembles codex argv and uses ignored stdin', async () => {
+test('assembles codex argv and sends the prompt through stdin', async () => {
   const observed = {};
   const prompt = 'Preserve `backticks` and punctuation: [x]';
   const fakeExecFile = (file, args, options, callback) => {
@@ -66,15 +69,70 @@ test('assembles codex argv and uses ignored stdin', async () => {
   assert.equal(observed.file, 'codex');
   assert.deepEqual(observed.args, [
     'exec',
-    '-C', os.homedir(),
+    '-C', codexConfig.workdir,
+    '--sandbox', 'read-only',
+    '--skip-git-repo-check',
     '-c', 'model=gpt-5.6-luna',
     '-c', 'model_reasoning_effort=low',
-    prompt,
+    '-',
   ]);
-  // execFile 忽略 stdio 選項,只有主動 end() 掉 stdin,codex 才不會停在等輸入
   assert.equal(observed.stdinEnded, true);
   assert.equal(observed.options.timeout, 120000);
   assert.equal(observed.options.shell, undefined);
+});
+
+test('streams a 300 KB prompt to codex stdin without putting it in argv', async () => {
+  const prompt = 'x'.repeat(300 * 1024);
+  const observed = { prompt: '' };
+  const fakeExecFile = (file, args, options, callback) => {
+    observed.file = file;
+    observed.args = args;
+    observed.options = options;
+    const stdin = new Writable({
+      write(chunk, _encoding, done) {
+        observed.prompt += chunk.toString();
+        done();
+      },
+      final(done) {
+        callback(null, '{"ok":true}', '');
+        done();
+      },
+    });
+    return { kill() { return true; }, stdin };
+  };
+
+  assert.equal(await runCodexCli(prompt, codexConfig, fakeExecFile), '{"ok":true}');
+  assert.equal(observed.file, 'codex');
+  assert.deepEqual(observed.args, [
+    'exec',
+    '-C', codexConfig.workdir,
+    '--sandbox', 'read-only',
+    '--skip-git-repo-check',
+    '-c', 'model=gpt-5.6-luna',
+    '-c', 'model_reasoning_effort=low',
+    '-',
+  ]);
+  assert.equal(observed.args.includes(prompt), false);
+  assert.equal(observed.prompt, prompt);
+});
+
+test('converts a codex stdin EPIPE into CodexCliExecutionError without an uncaught error', async () => {
+  const fakeExecFile = (_file, _args, _options, callback) => {
+    const stdin = new EventEmitter();
+    stdin.end = (prompt) => {
+      if (prompt) {
+        stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      } else {
+        setImmediate(() => callback(null, '{"ok":true}', ''));
+      }
+    };
+    return { stdin };
+  };
+
+  await assert.rejects(
+    runCodexCli('trigger EPIPE', codexConfig, fakeExecFile),
+    (error) => error.name === 'CodexCliExecutionError' && /EPIPE/.test(error.message),
+  );
 });
 
 test('kills codex when the configured timeout expires', async () => {
@@ -84,6 +142,7 @@ test('kills codex when the configured timeout expires', async () => {
       killedWith = signal;
       return true;
     },
+    stdin: { end() {} },
   });
 
   await assert.rejects(

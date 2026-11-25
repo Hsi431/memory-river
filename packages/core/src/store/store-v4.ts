@@ -316,9 +316,13 @@ export class MemoryStore {
   private lastCheckpointTxnId = 0;
   private walCheckpointInitialized = false;
   private walCheckpointUpdateQueue: Promise<void> = Promise.resolve();
+  private memorySsdWriteQueue: Promise<void> = Promise.resolve();
+  private ramMemoryWriteVersion = 0;
 
   // ── RAM-Only Mode ───────────────────────────────────────
   private ssdAvailable = true;
+  private ssdNeedsSync = false;
+  private pendingSsdDeleteIds = new Set<string>();
   private ssdConsecutiveFailures = 0;
   private ssdRecoveryProbeTimer: NodeJS.Timeout | null = null;
   private ssdRecoveryProbeInFlight = false;
@@ -398,6 +402,7 @@ export class MemoryStore {
 
     // ── Step 3: Hydration - 如果 RAM 是空的,從 SSD 拷貝 ─
     const ramContents = fs.readdirSync(ramDir);
+    const ramWasNonEmptyAtStart = ramContents.length > 0;
     if (this.ssdFallback) {
       console.log('[MemoryStore] SSD fallback active; using one persistent store');
     } else if (ramContents.length === 0) {
@@ -472,6 +477,11 @@ export class MemoryStore {
     // ── Step 9: 確保 memories table 有 status column（P0-3 schema migration）─
     await this.ensureStatusColumn();
 
+    if (ramWasNonEmptyAtStart && !this.ssdFallback && this.ssdAvailable) {
+      this.ssdNeedsSync = true;
+      await this.syncSsdFromRam();
+    }
+
     console.log('[MemoryStore] Initialization complete');
   }
 
@@ -495,6 +505,8 @@ export class MemoryStore {
         metadata: "{}",
         createdAt: 0,
         updatedAt: 0,
+        sessionId: "",
+        lastConcentratedAt: 0,
         slotKey: "",
         slotValue: "",
         confidence: 0.0,
@@ -509,7 +521,28 @@ export class MemoryStore {
     // 確保 FTS index
     await this.ensureFtsIndex(table, label);
     await this.ensureHasHooksColumnAndIndex(table, label);
+    await this.ensureMemorySessionColumns(table, label);
     return table;
+  }
+
+  private async ensureMemorySessionColumns(table: any, label: string): Promise<void> {
+    const fields = (await table.schema()).fields;
+    const names = new Set(fields.map((field: any) => field.name));
+    const missing = [];
+    if (!names.has("sessionId")) {
+      missing.push({ name: "sessionId", valueSql: "CAST(NULL AS STRING)" });
+    }
+    if (!names.has("lastConcentratedAt")) {
+      missing.push({ name: "lastConcentratedAt", valueSql: "CAST(NULL AS DOUBLE)" });
+    }
+    if (missing.length === 0) return;
+
+    await table.addColumns(missing);
+    const migratedNames = new Set((await table.schema()).fields.map((field: any) => field.name));
+    const remaining = ["sessionId", "lastConcentratedAt"].filter(name => !migratedNames.has(name));
+    if (remaining.length > 0) {
+      throw new Error(`[MemoryStore] [${label}] failed to add memory columns: ${remaining.join(", ")}`);
+    }
   }
 
   private async ensureHasHooksColumnAndIndex(table: any, label: string): Promise<void> {
@@ -997,6 +1030,7 @@ export class MemoryStore {
   private handleSsdError(err: any, operation: string): void {
     if (!this.ssdAvailable) return;
     this.ssdConsecutiveFailures++;
+    this.ssdNeedsSync = true;
     if (this.ssdConsecutiveFailures < SSD_FAILURE_THRESHOLD) {
       console.warn(
         `[MemoryStore] SSD operation failed (${operation}); consecutive failures ${this.ssdConsecutiveFailures}/${SSD_FAILURE_THRESHOLD}. Error: ${err?.message ?? err}`,
@@ -1026,7 +1060,9 @@ export class MemoryStore {
 
     this.ssdRecoveryProbeInFlight = true;
     try {
+      await this.memorySsdWriteQueue;
       await this.ssdTable.countRows();
+      await this.syncSsdFromRam();
       this.ssdAvailable = true;
       this.handleSsdSuccess();
       this.stopSsdRecoveryProbe();
@@ -1035,6 +1071,61 @@ export class MemoryStore {
       console.warn(`[MemoryStore] SSD recovery probe failed; retries will continue. Error: ${err?.message ?? err}`);
     } finally {
       this.ssdRecoveryProbeInFlight = false;
+    }
+  }
+
+  private enqueueMemorySsdWrite(operation: string, write: () => Promise<unknown>): void {
+    this.memorySsdWriteQueue = this.memorySsdWriteQueue.then(async () => {
+      if (!this.ssdAvailable) {
+        this.ssdNeedsSync = true;
+        return;
+      }
+      try {
+        await write();
+        this.handleSsdSuccess();
+        if (this.ssdNeedsSync) await this.syncSsdFromRam();
+      } catch (err: any) {
+        this.handleSsdError(err, operation);
+      }
+    });
+  }
+
+  private markRamMemoryWrite(): void {
+    this.ramMemoryWriteVersion++;
+    if (!this.ssdAvailable) this.ssdNeedsSync = true;
+  }
+
+  private async syncSsdFromRam(): Promise<void> {
+    if (this.ssdFallback || !this.ramTable || !this.ssdTable) return;
+
+    while (true) {
+      const version = this.ramMemoryWriteVersion;
+      const ramRows = await this.ramTable.query().toArray();
+
+      // Additive only: a partial RAM copy must never be able to wipe rows from the SSD backup.
+      // Deletes are replayed only for ids this process removed from RAM while SSD was behind.
+      for (const id of [...this.pendingSsdDeleteIds]) {
+        await this.ssdTable.delete(`id = ${sqlStringLiteral(id)}`);
+        this.pendingSsdDeleteIds.delete(id);
+      }
+
+      if (ramRows.length > 0) {
+        const lancedb = await loadLanceDB();
+        const rows = ramRows.map((row: any) => ({ ...row, vector: this.toJsVector(row.vector) }));
+        const source = (lancedb as any).makeArrowTable
+          ? (lancedb as any).makeArrowTable(rows, { schema: await this.ramTable.schema() })
+          : rows;
+        await this.ssdTable
+          .mergeInsert(["id"])
+          .whenMatchedUpdateAll()
+          .whenNotMatchedInsertAll()
+          .execute(source as any);
+      }
+
+      if (version === this.ramMemoryWriteVersion) {
+        this.ssdNeedsSync = false;
+        return;
+      }
     }
   }
 
@@ -1687,15 +1778,10 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
 
     // RAM 同步寫(主要)
     await this.lancedbRetry('store:ram', () => this.ramTable.add([fullEntry]));
+    this.markRamMemoryWrite();
 
     // SSD 異步寫(備份,fire-and-forget)
-    if (this.ssdAvailable) {
-      this.lancedbRetry('store:ssd', () => this.ssdTable.add([fullEntry]))
-        .then(() => this.handleSsdSuccess())
-        .catch((err: any) => {
-          this.handleSsdError(err, 'store');
-        });
-    }
+    this.enqueueMemorySsdWrite('store', () => this.lancedbRetry('store:ssd', () => this.ssdTable.add([fullEntry])));
 
     // RAM 寫入成功後標記 transaction committed；SSD 可由 recovery 冪等補寫。
     await this.commitWal(fullEntry.id, txnId);
@@ -1769,22 +1855,15 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
     if (newVector !== undefined) {
       await this.lancedbRetry('update:ram-vector', () => this.ramTable.update({ where: `id = '${id}'`, values: { vector: newVector } }));
     }
-    if (this.ssdAvailable) {
-      // 兩個 SSD update 呼叫必須序列化（不能同時對同一張 LanceDB table 並發送出兩個
-      // update commit），否則會互相搶 dataset version 造成 commit 失敗。
-      let ssdChain = this.lancedbRetry('update:ssd', () => this.ssdTable.update(lanceValues, { where: `id = '${id}'` }));
+    this.markRamMemoryWrite?.();
+    const writeSsd = async () => {
+      await this.lancedbRetry('update:ssd', () => this.ssdTable.update(lanceValues, { where: `id = '${id}'` }));
       if (newVector !== undefined) {
-        ssdChain = ssdChain.then(() =>
-          this.lancedbRetry('update:ssd-vector', () => this.ssdTable.update({ where: `id = '${id}'`, values: { vector: newVector } }))
-        );
+        await this.lancedbRetry('update:ssd-vector', () => this.ssdTable.update({ where: `id = '${id}'`, values: { vector: newVector } }));
       }
-      ssdChain
-        .then(() => this.handleSsdSuccess?.())
-        .catch((err: any) => {
-          this.handleSsdError(err, 'update');
-        });
-    }
-
+    };
+    if (typeof this.enqueueMemorySsdWrite === 'function') this.enqueueMemorySsdWrite('update', writeSsd);
+    else await writeSsd();
 
     // 3. WAL commit(含 txnId,更新 checkpoint metadata)
     await this.commitWal(id, txnId);
@@ -1807,13 +1886,12 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
 
     // 2. RAM 同步刪除(主要),SSD 異步降級(備份)
     await this.lancedbRetry('delete:ram', () => this.ramTable.delete(`id = '${id}'`));
-    if (this.ssdAvailable) {
-      this.lancedbRetry('delete:ssd', () => this.ssdTable.delete(`id = '${id}'`))
-        .then(() => this.handleSsdSuccess())
-        .catch((err: any) => {
-          this.handleSsdError(err, 'delete');
-        });
-    }
+    this.markRamMemoryWrite();
+    this.pendingSsdDeleteIds.add(id);
+    this.enqueueMemorySsdWrite('delete', async () => {
+      await this.lancedbRetry('delete:ssd', () => this.ssdTable.delete(`id = '${id}'`));
+      this.pendingSsdDeleteIds.delete(id);
+    });
 
 
     // 3. WAL commit(含 txnId,更新 checkpoint metadata)
@@ -3004,12 +3082,11 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
           lanceValues,
           { where: `id = '${id}'` }
         ));
-        if (this.ssdAvailable) {
-          await this.lancedbRetry('batch_update:ssd', () => this.ssdTable.update(
+        this.markRamMemoryWrite();
+        this.enqueueMemorySsdWrite('batch_update', () => this.lancedbRetry('batch_update:ssd', () => this.ssdTable.update(
             lanceValues,
             { where: `id = '${id}'` }
-          ));
-        }
+          )));
       } catch (err: any) {
         // 靜音處理,避免 LanceDB 底層警告洗頻,只在真出錯時才印
         if (!err.message?.includes('Fragment')) {
@@ -3033,7 +3110,15 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
   }> {
     await this.ensureInitialized();
 
-    const allMemories = await this.ramTable.query().limit(10000).toArray();
+    const allMemories: any[] = [];
+    const pageSize = 1000;
+    for (let offset = 0; ; ) {
+      const query = this.ramTable.query();
+      const page = await (offset === 0 ? query : query.offset(offset)).limit(pageSize).toArray();
+      allMemories.push(...page);
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
     let decayed = 0, deleted = 0, coreProtected = 0, wouldDecay = 0, wouldDelete = 0;
     let deferredDecay = 0, deferredDelete = 0;
     const effectiveCoreCategories = options.coreCategories ?? this.healthConfig.coreCategories;
@@ -3238,6 +3323,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
     }
 
     try {
+      await this.memorySsdWriteQueue;
       if (this.ramDb) {
         await this.ramDb.close();
         console.log('[MemoryStore] RAM connection closed');

@@ -15,8 +15,7 @@ export async function rehydrateByKeyword(
   const files = fs.readdirSync(transcriptsDir)
     .filter(file => file.endsWith('.jsonl') && !file.endsWith('.idx'))
     .filter(file => !opts?.sessionKey || file === `${opts.sessionKey}.jsonl` || file.startsWith(`${opts.sessionKey}.`))
-    .sort((a, b) => fs.statSync(path.join(transcriptsDir, b)).mtimeMs - fs.statSync(path.join(transcriptsDir, a)).mtimeMs)
-    .slice(0, opts?.sessionKey ? undefined : 10);
+    .sort((a, b) => fs.statSync(path.join(transcriptsDir, b)).mtimeMs - fs.statSync(path.join(transcriptsDir, a)).mtimeMs);
   const candidates: Array<{ value: TranscriptEntry; text: string; timestamp: number }> = [];
   for (const file of files) {
     for (const line of fs.readFileSync(path.join(transcriptsDir, file), 'utf8').split('\n')) {

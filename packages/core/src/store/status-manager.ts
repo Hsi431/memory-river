@@ -20,8 +20,20 @@ import type {
   StatusAuditRow,
 } from "../types.js";
 
+type GraphStoreInvalidator = {
+  deleteTriplesByMemoryId(memoryId: string): Promise<void>;
+};
+
 export class StatusManager {
-  constructor(private store: MemoryStore) {}
+  private graphStore?: GraphStoreInvalidator;
+
+  constructor(private store: MemoryStore, graphStore?: GraphStoreInvalidator) {
+    this.graphStore = graphStore;
+  }
+
+  setGraphStore(graphStore: GraphStoreInvalidator | null): void {
+    this.graphStore = graphStore ?? undefined;
+  }
 
   // ========================================================================
   // 主寫入 API — 所有 status 變更走這
@@ -99,6 +111,14 @@ export class StatusManager {
       if (req.meta) {
         for (const [key, value] of Object.entries(req.meta)) {
           meta[key] = value;
+        }
+      }
+
+      if (req.toStatus === 'deprecated' || req.toStatus === 'superseded' || req.toStatus === 'trashed') {
+        try {
+          await this.graphStore?.deleteTriplesByMemoryId(req.memoryId);
+        } catch (err: any) {
+          console.warn(`[StatusManager] graph triple cleanup failed for ${req.memoryId.slice(0, 8)}: ${err?.message ?? err}`);
         }
       }
 

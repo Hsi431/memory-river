@@ -23,7 +23,7 @@ function makeCandidate(id, category, status = 'active', slotSubject, slotCardina
   };
 }
 
-function makeDetector(candidates, judged, newSubject = null, answer = 'NO', statusChanges = [], newCardinality = null, options = {}) {
+function makeDetector(candidates, judged, newSubject = null, answer = '{"conflict":false}', statusChanges = [], newCardinality = null, options = {}) {
   const store = {
     hybridVectorSearch: async () => candidates,
     getById: async () => {
@@ -96,7 +96,7 @@ test('conflict detector excludes candidates with a different slot subject before
     [makeCandidate('john-memory', 'preference', 'active', 'John')],
     judged,
     'James',
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
   );
 
@@ -114,7 +114,7 @@ test('conflict detector suppresses a candidate with the same slot subject', asyn
     [makeCandidate('james-old', 'preference', 'active', ' james ')],
     judged,
     'JAMES',
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
   );
 
@@ -134,7 +134,7 @@ test('conflict detector preserves null-subject conflict behavior', async () => {
     [makeCandidate('unknown-old', 'preference', 'active', null)],
     judged,
     null,
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
   );
 
@@ -153,7 +153,7 @@ test('conflict detector excludes a subjectless candidate for a new subject', asy
     [makeCandidate('unknown-old', 'preference')],
     judged,
     'James',
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
   );
 
@@ -171,7 +171,7 @@ test('conflict detector does not judge a same-subject multi cardinality new memo
     [makeCandidate('james-old', 'preference', 'active', 'James', 'single')],
     judged,
     'James',
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
     'multi',
   );
@@ -190,7 +190,7 @@ test('conflict detector does not judge a same-subject multi cardinality candidat
     [makeCandidate('james-old', 'preference', 'active', 'James', 'multi')],
     judged,
     'James',
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
     'single',
   );
@@ -209,7 +209,7 @@ test('conflict detector judges and suppresses same-subject single cardinality me
     [makeCandidate('james-old', 'preference', 'active', 'James', 'single')],
     judged,
     'James',
-    '衝突',
+    '{"conflict":true}',
     statusChanges,
     'single',
   );
@@ -241,7 +241,7 @@ test('conflict detector returns no candidates when new metadata is malformed', a
   const statusChanges = [];
   const detector = makeDetector([
     makeCandidate('james-old', 'preference', 'active', 'James', 'single'),
-  ], judged, 'James', '衝突', statusChanges, 'single', {
+  ], judged, 'James', '{"conflict":true}', statusChanges, 'single', {
     newMetadata: { metadata: '{bad' },
   });
 
@@ -257,7 +257,7 @@ test('conflict detector returns no candidates when getById throws', async () => 
   const statusChanges = [];
   const detector = makeDetector([
     makeCandidate('james-old', 'preference', 'active', 'James', 'single'),
-  ], judged, 'James', '衝突', statusChanges, 'single', { getByIdError: true });
+  ], judged, 'James', '{"conflict":true}', statusChanges, 'single', { getByIdError: true });
 
   const result = await detector.detectAndResolve('james-new', 'James favorite game', 'preference');
 

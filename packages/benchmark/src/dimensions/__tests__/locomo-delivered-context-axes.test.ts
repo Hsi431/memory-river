@@ -4,9 +4,17 @@ import test from 'node:test';
 import {
   classifyGoldAtoms,
   goldAtomFirstOffset,
+  measureAtomRecallInContext,
 } from '../../harness/locomo-delivered-context.js';
 
 // ─── goldAtomFirstOffset ──────────────────────────────────────────────────────
+
+test('gold item fixture mismatch is reported instead of scoring zero', () => {
+  assert.throws(
+    () => measureAtomRecallInContext('some delivered context', 'conv-27', 0),
+    /fixture.*conv-26.*conv-27/i,
+  );
+});
 
 test('goldAtomFirstOffset returns 0 when atom is at start of context', () => {
   const context = 'pottery and swimming';

@@ -18,7 +18,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { runOtter } from '../agent/otter.js';
+import { otterReadonlyEnabled, runOtter } from '../agent/otter.js';
 import { createXaiJudge, xaiJudgeAvailable } from '../harness/xai-llm.js';
 import { deepseekApiKey } from '../harness/provider-keys.js';
 import type { ToolResultEvent } from '../harness/tool-llm.js';
@@ -151,6 +151,24 @@ type ToolCounts = Record<ToolName, number>;
 export interface GradeResult {
   correct: boolean;
   parseFailure: boolean;
+}
+
+export function answerScoreMetrics(grades: GradeResult[]): {
+  answer_accuracy: number;
+  answer_accuracy_including_parse_failures: number;
+  parse_failures: number;
+  parse_failure_rate: number;
+} {
+  const correct = grades.filter(grade => grade.correct).length;
+  const parseFailures = grades.filter(grade => grade.parseFailure).length;
+  const total = grades.length;
+  const graded = total - parseFailures;
+  return {
+    answer_accuracy: graded > 0 ? correct / graded : 0,
+    answer_accuracy_including_parse_failures: total > 0 ? correct / total : 0,
+    parse_failures: parseFailures,
+    parse_failure_rate: total > 0 ? parseFailures / total : 0,
+  };
 }
 
 interface QuestionToolTrace {
@@ -309,6 +327,7 @@ export async function runConversationBenchmark(
 ): Promise<BenchmarkResult> {
   const { dimensionName, gradeQuestion = defaultGradeAnswer } = config;
   const runStartedAt = Date.now();
+  console.log(`[benchmark] Otter memory mode: ${otterReadonlyEnabled() ? 'read-only' : 'write-enabled'}`);
 
   if (!(await ollamaHealthy())) {
     return { dimension: dimensionName, metrics: {}, details: { skipped: 'ollama-unavailable' } };
@@ -338,7 +357,7 @@ export async function runConversationBenchmark(
 
   const slice = conversations.slice(0, options.limit ?? conversations.length);
   const judge = createXaiJudge();
-  const categoryCounts = new Map<string, { correct: number; total: number }>();
+  const gradedAnswers: Array<{ category: string; grade: GradeResult }> = [];
   const conversationDetails: Array<Record<string, unknown>> = [];
   const rehydrateModeMix: Record<string, number> = {
     entry_ids: 0,
@@ -368,17 +387,31 @@ export async function runConversationBenchmark(
     const categoryAccuracy: Record<string, {
       correct: number;
       total: number;
+      parseFailures: number;
       accuracy: number;
+      accuracyIncludingParseFailures: number;
     }> = {};
+    const scoreMetrics = answerScoreMetrics(gradedAnswers.map(item => item.grade));
     const metrics: Record<string, number> = {
-      answer_accuracy: total > 0 ? correct / total : 0,
+      ...scoreMetrics,
       rehydrate_hit_rate: rehydrateCalls > 0 ? rehydrateHits / rehydrateCalls : 0,
       entry_ids_advertised_observed: entryIdsAdvertisedObserved,
     };
-    for (const [category, counts] of [...categoryCounts.entries()].sort()) {
-      const accuracy = counts.total > 0 ? counts.correct / counts.total : 0;
-      categoryAccuracy[category] = { ...counts, accuracy };
-      metrics[`category_${category}_accuracy`] = accuracy;
+    const categories = [...new Set(gradedAnswers.map(item => item.category))].sort();
+    for (const category of categories) {
+      const categoryGrades = gradedAnswers
+        .filter(item => item.category === category)
+        .map(item => item.grade);
+      const categoryMetrics = answerScoreMetrics(categoryGrades);
+      const categoryCorrect = categoryGrades.filter(grade => grade.correct).length;
+      categoryAccuracy[category] = {
+        correct: categoryCorrect,
+        total: categoryGrades.length,
+        parseFailures: categoryMetrics.parse_failures,
+        accuracy: categoryMetrics.answer_accuracy,
+        accuracyIncludingParseFailures: categoryMetrics.answer_accuracy_including_parse_failures,
+      };
+      metrics[`category_${category}_accuracy`] = categoryMetrics.answer_accuracy;
     }
     const totalWallClockSeconds = (Date.now() - runStartedAt) / 1000;
     return {
@@ -447,8 +480,8 @@ export async function runConversationBenchmark(
   // Resume skips runOtter for cached questions; without read-only, runOtter mutates the shared
   // per-conversation river (memory_store/gwm/skill_*), so a resumed run's UNcached questions would
   // see different river state than an uninterrupted run and stop being equivalent. Fail fast.
-  if (answerCachePath && process.env.MR_OTTER_READONLY !== '1') {
-    throw new Error('MR_ANSWER_CACHE requires MR_OTTER_READONLY=1 (resume correctness: cached questions skip the agent, so mutating tools must be disabled).');
+  if (answerCachePath && !otterReadonlyEnabled()) {
+    throw new Error('MR_ANSWER_CACHE requires read-only mode (unset MR_OTTER_READONLY or set it to anything other than 0).');
   }
   const answerCache = new Map<string, CachedAnswer>();
   if (answerCachePath && fs.existsSync(answerCachePath)) {
@@ -623,15 +656,12 @@ export async function runConversationBenchmark(
         };
         addTokenUsage(judgeUsage, questionJudgeUsage);
         if (!judgeError) {
-          const category = categoryCounts.get(qa.category) ?? { correct: 0, total: 0 };
-          category.total++;
+          gradedAnswers.push({ category: qa.category, grade });
           total++;
           if (grade.correct) {
-            category.correct++;
             correct++;
           }
           if (grade.parseFailure) judgeParseFailureCount++;
-          categoryCounts.set(qa.category, category);
         }
 
         toolCalls += result.trace.length;

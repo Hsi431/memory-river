@@ -38,8 +38,8 @@
 | 一坨扁平 embedding，存了就不動 | **三種時間尺度**：會褪色的膠囊、會留存的筆記、永久的原文 |
 | 壓縮長對話 = 直接截掉舊內容 | 壓縮 = **蒸餾**成摘要 + 顆粒化筆記，原文逐字歸檔不丟 |
 | 失真就失真，細節找不回 | 失真記憶帶**回指原文的指標**，agent 可 `rehydrate` 撈回逐字數字/人名/日期 |
-| 記憶永遠不變 | 記憶會**衰退、被存取回血、被更新取代**；矛盾被標記 deprecated 而非默默並存 |
-| 累積越來越髒 | **夜間整理**週期性去重合併；歸零記憶走 trash 保護路徑清掉 |
+| 記憶永遠不變 | 健康度線性衰減；特定檢索路徑與技能載入會加分；矛盾偵測限四種 category |
+| 累積越來越髒 | **夜間整理**會合併相關記憶，也可獨立將過期或冗餘記憶標成 deprecated；刪除經過 trash |
 | Embedding 要雲端 API | **全本地** Ollama embedding，零雲端依賴、可自架 |
 | 黑箱：為什麼撈到這條? | **可稽核**：每條蒸餾結論都能追回產生它的原文 |
 
@@ -56,7 +56,7 @@ flowchart LR
     C["💬 對話"] -->|"越過水位線"| D["💧 蒸餾"]
     C -->|"每一句逐字歸檔"| T["📜 Transcript — 長期<br/>append-only + byte-offset 索引<br/>永久的原始紀錄"]
     D --> CAP["🩹 膠囊 — 短期<br/>注入下個 prompt 的前情提要<br/>起始健康度低、代謝快"]
-    D --> N["📝 筆記 — 中期<br/>顆粒化、可獨立理解的事實<br/>會留存;緩慢衰退、被存取回血"]
+    D --> N["📝 筆記 — 中期<br/>顆粒化、可獨立理解的事實<br/>會留存;緩慢衰退"]
     CAP -.->|"sourceEntryIds"| T
     N -.->|"sourceEntryIds"| T
     N ==>|"recall(自動、便宜)"| A["🤖 Agent"]
@@ -84,12 +84,12 @@ flowchart LR
 
 ## 🧬 會代謝的記憶
 
-記憶不是寫一次就不動的列，它們**會活**。健康度走遺忘曲線:被命中就**回血**、長期沒用就**衰退**、存取越頻繁衰退越慢:
+記憶不是寫一次就不動的列，它們**會活**。每次衰減 sweep 按 `0.15 × 經過小時 × max(0.2, 1 − 0.01 × accessCount)` 點線性扣分；健康度 100 且未存取時約 28 天歸零。存取次數會減慢衰減，非 skill 的 active v2 膠囊以四分之一速度衰減。核心類別(`identity`、`preference`、`constraint`、`business`、`decision`、`core_rule`)、重要度 ≥ 0.75 的記憶(dynamic capsule 除外)及 skill capsule 不參與衰減。只有會排入加分佇列的 Retriever 路徑(通過/partial 候選、EntitySynergy 合併)與符合條件的非核心技能載入會加健康度；`engine.recall()` 搜尋並重排結果，但不加分:
 
 ```mermaid
 flowchart LR
     W["✍️ 寫入<br/>滿血"] --> L["🫀 存活"]
-    L -->|"被存取 → 回血,<br/>越常用衰退越慢"| L
+    L -->|"特定檢索路徑 / 技能載入 → 加分;<br/>存取次數減慢衰退"| L
     L -->|"長期沒用 → 衰退"| Z["💤 健康度歸零"]
     L -->|"被矛盾 / 被取代"| DEP["🪦 Deprecated<br/>supersededBy 追溯鏈"]
     Z --> TR["🗑️ Trash<br/>保留窗口"]
@@ -97,7 +97,7 @@ flowchart LR
     NC["🌙 夜間整理"] -->|"合併重複、重評信心、<br/>清雜訊"| L
 ```
 
-新事實**取代**舊事實需要結構證據 —— 同一個 slot、同一個主體、單值屬性；否則兩者並存,只把新的標成現行值。矛盾被**標記 deprecated**,絕不默默並存;夜間有一趟把冗餘記憶**合併**；歸零記憶走 trash 保護路徑清掉。核心類別(identity/constraint/business/core_rule)、高重要性事實、技能膠囊**免於衰減** —— 記憶庫保持相關，而不是長成一堆雜訊。
+新事實可取代相近舊事實；矛盾偵測只處理 `preference`、`constraint`、`identity`、`decision`，並要求 LLM 回傳含布林值 `conflict` 的結構化 JSON。夜間 merge 只有通過 subject/cardinality 相容檢查才會把來源標為 deprecated；另一個獨立的 `deprecated` 決策可標記過期或冗餘記憶，不限於 merge。健康度歸零與已過保留期的 `trashed` 記憶都會先寫入 JSON trash，保留 7 天再清除。SSD 寫入失敗會在 SSD 恢復後同步 RAM；啟動時 RAM→SSD 同步只新增/更新，不會清除 SSD 獨有列。WAL 是 at-least-once，非 exactly-once；仍應備份 `dataDir`，且同時遺失資料目錄與 WAL 時無法靠此復原。
 
 ---
 
@@ -251,13 +251,13 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 - 不偷看 oracle 證據
 - 沒有藏在背後的 benchmark 專用 retry 迴圈
 - 經真實 agent loop 端到端答題
-- 評測期間關閉記憶寫入(`MR_OTTER_READONLY=1`),讓中斷的 run 可以續跑而不會讓 agent 在評測途中改動記憶庫;上面兩趟對照都跑在同一個設定下
+- 評測期間預設唯讀(`MR_OTTER_READONLY` 預設唯讀；設為 `0` 才允許寫入),讓中斷的 run 可以續跑而不會讓 agent 在評測途中改動記憶庫;上面兩趟對照都跑在同一個設定下
 
 這刻意比常見的排行榜式設定更嚴。它量的是 Memory River 作為「嵌進真實 agent 的通用記憶引擎」,不是一條為 benchmark 特化的答題流水線。
 
 為了對照,我們也曾在**完全相同的那批生成答案**上,另外報一個 mem0 式的 LLM-as-judge 分數。這不動 agent、不動檢索到的 context、不動模型輸出 —— 只換 judge rubric,而光是 rubric 就能把分數拉動很大:在先前那次 run,同一批 cat1 答案在嚴格的不給部分分 judge 下是 **34.8%**,在 mem0 式 rubric 下變 **84.8%**。這就是為什麼 LoCoMo 數字不附完整評測協定就不該被拿來比。
 
-在 mem0 式 rubric 下(rubric prompt 從 `mem0ai/memory-benchmarks` 逐字複製),Memory River 的 cat1–4 在**先前那次以 Gemini 評分的 run** 達 **79.9%**,judge parse failure 一律算錯(17/1,539)。**換 judge 與檢索修正之後,那一輪 rubric 評分尚未重跑,所以我們不把它當成現行數字重述。** 我們把它當「跟公開數字可對照」的比較值,不是主要的工程分數 —— 主數字仍是那個較嚴的端到端分數。
+在 mem0 式 rubric 下(rubric prompt 從 `mem0ai/memory-benchmarks` 逐字複製),Memory River 的 cat1–4 在**先前那次以 Gemini 評分的 run** 達 **79.9%**；當時的口徑把 17 題 judge parse failure 算錯(共 1,539 題)。現行計分會把 parse failure 分開統計。**換 judge 與檢索修正之後,那一輪 rubric 評分尚未重跑,所以我們不把它當成現行數字重述。** 我們把它當「跟公開數字可對照」的比較值,不是主要的工程分數 —— 主數字仍是那個較嚴的端到端分數。
 
 重點不是表演排行榜的把戲,而是把取捨攤開來看:
 
@@ -299,13 +299,13 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 | 雙層儲存 + WAL | RAM 目錄(可放 tmpfs)熱讀、資料目錄持久層、write-ahead log 含當機恢復 | `store/store-v4` |
 | 蒸餾管線 | 舊對話摘成膠囊 + 顆粒化筆記,經非同步 inbox 寫入 —— **寫入永不阻塞對話** | `distill/concentrator-adapter` + `pipeline/inbox-watcher` |
 | Transcript + rehydrate | 逐字原文歸檔 + byte-offset `.idx`;用 entry-id / 時間 / 關鍵字撈回原文 | `transcript/` |
-| Hybrid 檢索 | 向量 + 全文 BM25、RRF 融合、可選本地 rerank(CRAG 式 accept/partial/reject,調在 recall 安全端)、EntitySynergyMerger(NER 碎片搶救)、版本關係標註、因果鏈上下文擴展 | `retrieval/retriever-v4` |
+| Hybrid 檢索 | 向量 + 全文 BM25、RRF 融合、可選本地 rerank(CRAG 式 accept/partial/reject,調在 recall 安全端)、EntitySynergyMerger(NER 碎片搶救)、Structured Slot 去重、因果鏈上下文擴展 | `retrieval/retriever-v4` |
 | 知識圖譜 | 三元組(subject–relation–object)儲存,向量 + FTS 實體搜尋,供鉤子做語意查詢擴展 | `store/graph-store` |
-| 記憶代謝 | 健康度衰減 / 存取回血 / 歸零走 trash | `lifecycle/cleanup-engine` |
+| 記憶代謝 | 線性健康度衰減；特定 Retriever 路徑與技能載入加分；歸零及超期 trashed 經 7 天 JSON trash | `lifecycle/cleanup-engine` + `store/store-v4` |
 | 夜間整理 | 週期性離線合併、壓縮相關記憶 | `lifecycle/night-consolidation` |
 | 聯想鉤子 | 記憶可帶觸發關鍵字,命中時連帶喚起相關記憶;命中成效有回饋閉環動態調權 | `cognition/hooks-engine` |
-| 因果 + 衝突 | 新事實要有結構證據才會把舊事實標 deprecated(slotKey 相同、主體非 null 且相等、cardinality 明確單值、parent 仍 active);否則只記血緣關係。矛盾標記 deprecated 並記 `supersededBy` 追溯鏈 | `cognition/causal-engine` + `conflict-detector` |
-| Structured Slot | 寫入時抽結構化參數(slotKey/slotValue)+ 版本鏈;檢索時保留所有版本,把較舊的標記出來而不是丟掉 | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
+| 因果 + 衝突 | 衝突偵測限四類 category 並讀取結構化 JSON 判定；merge 的 deprecated 須通過 subject/cardinality 相容檢查 | `cognition/causal-engine` + `conflict-detector` |
+| Structured Slot | 寫入時抽結構化參數(slotKey/slotValue)+ 版本鏈;檢索時同 slot 只回最新 active | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
 | 全局工作記憶 (GWM) | 追蹤長對話主任務,embedding 漂移偵測,偏題時注入提醒拉回 | `cognition/global-working-memory` |
 | 技能膠囊 v2 | 顯式儲存的程序性知識,漸進式揭露:平時只注入一行索引,要用才載入完整步驟 | `engine` + `skills/` |
 | Ralph Loop | context 斷路器:連續失敗時修剪 / 截斷 context、注入警告,防 context 爆掉 | `cognition/ralph-core` |
@@ -325,19 +325,19 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 每一句逐字歸檔成 append-only JSONL,帶 byte-offset `.idx` sidecar(拿到 entryId 就 O(1) 定位),自動 rotation。膠囊/筆記記下它摘要了哪幾句原文(`sourceEntryIds`),所以失真記憶能被**還原**:`memory_rehydrate` 支援 entry-id(最精確)、時間窗、關鍵字(ranked-OR 匹配)三種模式。這是「lossy 記憶 + 主動補完」的底層(見上面 [兩段式檢索](#-兩段式檢索--主動補完gap-aware-rehydrate))。`transcript/`
 
 ### 🔍 Retriever — _多層篩選,只給最值得看的_
-召回不是單純向量搜尋:**Hybrid**(向量 + 全文 BM25 + RRF 融合)→ **Hooks 聯想**(+ 知識圖譜語意擴展)→ **EntitySynergyMerger**(當多條記憶各含部分事實時,用 NER + IDF-weighted Jaccard 把碎片拼回,純本地零 LLM token)→ **CRAG 品質審核**(accept/partial/reject,門檻調在 recall 安全端,只擋明顯不相關、不誤殺近義)→ **版本關係標註**(同一事實的較舊版本會被標記,不是丟掉)→ **因果鏈擴展**。`retrieval/retriever-v4`
+召回不是單純向量搜尋:**Hybrid**(向量 + 全文 BM25 + RRF 融合)→ **Hooks 聯想**(+ 知識圖譜語意擴展)→ **EntitySynergyMerger**(當多條記憶各含部分事實時,用 NER + IDF-weighted Jaccard 把碎片拼回,純本地零 LLM token)→ **CRAG 品質審核**(accept/partial/reject,門檻調在 recall 安全端,只擋明顯不相關、不誤殺近義)→ **Structured Slot 去重**(同 slot 只留最新)→ **因果鏈擴展**。`retrieval/retriever-v4`
 
 ### 📊 GraphStore — _知識圖譜三元組_
 把記憶裡的關係抽成 `subject–relation–object` 三元組獨立儲存(例:`Alice –is– CEO –of– ArtiMart`),三元組文字自動向量化做 ANN 語意搜尋、subject 欄位做 FTS 實體搜尋。檢索時供 Hooks 做語意查詢擴展,把相關實體一起拉進來。`store/graph-store`
 
 ### 🧬 Causal Engine — _記憶是因果鏈,不是碎片_
-新記憶寫入時判定它與既有記憶的關係:`UPDATE`(夠近 + 字面重疊 → 新記憶繼承 parentId;舊記憶只有在具備結構證據時才會被標 deprecated —— 光靠向量相近會把「同一主題的下一次發生」讀成「同一事實的新版本」)、`CAUSAL`(中等距離 → 建因果連結、兩筆共存)、`INDEPENDENT`(無關)。只做純函式判定,實際 update/deprecate 交給 inbox/StatusManager;門檻依 embedding 維度自動計算、同 category 自動放寬。`cognition/causal-engine`
+新記憶寫入時判定它與既有記憶的關係:`UPDATE`(夠近 + 字面重疊 → 舊記憶標 deprecated、新記憶繼承 parentId)、`CAUSAL`(中等距離 → 建因果連結、兩筆共存)、`INDEPENDENT`(無關)。只做純函式判定,實際 update/deprecate 交給 inbox/StatusManager;門檻依 embedding 維度自動計算、同 category 自動放寬。`cognition/causal-engine`
 
 ### ⚡ Conflict Detector — _像大腦一樣主動遺忘_
-模擬 retrieval-induced forgetting:只對高衝突類別(`preference`/`constraint`/`identity`/`decision`)觸發,寫入後掃同類相似記憶,LLM 判定語意衝突 → 衝突記憶標 deprecated 並記 `supersededBy` 追溯鏈。保守策略:判定失敗預設共存,不確定絕不刪。`cognition/conflict-detector`
+模擬 retrieval-induced forgetting:只對 `preference`/`constraint`/`identity`/`decision` 觸發,寫入後掃同類相似記憶;LLM 必須回傳含布林值 `conflict` 的結構化 JSON,才會依判定將舊記憶標 deprecated 並記 `supersededBy`。格式錯誤或判定失敗時預設共存。`cognition/conflict-detector`
 
 ### 🎯 Structured Slot — _精確參數不靠人記_
-寫入時自動抽結構化參數(例:「SSH port 改成 2222」→ `slotKey=technical:ssh_port, slotValue=2222`),信心夠才寫入、不夠降級為自由文本。同 slotKey 的版本鏈以主體與 cardinality 劃分作用域,一個人的 `favorite_game` 不會覆蓋另一個人的。檢索不會丟掉舊版本:它依血緣(或 slotKey 加上相符的主體)分組,把過時的那幾條標記出來,讓 agent 同時看到歷史與現行值,而不是一個被無聲截斷的視圖。新舊判定以血緣優先,其次是對話發生時間 —— 絕不用寫入庫的時間,那會被重新匯入弄反。`pipeline/inbox-watcher` + `retrieval/retriever-v4`
+寫入時自動抽結構化參數(例:「SSH port 改成 2222」→ `slotKey=technical:ssh_port, slotValue=2222`),信心夠才寫入、不夠降級為自由文本。同 slotKey 有版本鏈,舊值標 deprecated、新值 active;檢索時同 slot 只回最新 active,不會新舊並陳。`pipeline/inbox-watcher` + `retrieval/retriever-v4`
 
 ### 🎣 Hooks Engine — _觸景生情的聯想網路_
 不是關鍵字匹配,是 LLM 生成的**概念觸發器**(好鉤子:「報告撰寫規範」;爛鉤子:「報告」)。三級權重,有**品質回饋閉環**:鉤子觸發 → CRAG 審核結果回報 → 動態調權,長期低效的鉤子自動淘汰。`cognition/hooks-engine`
@@ -346,7 +346,7 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 追蹤長對話的主任務目標,每輪用 embedding cosine 偵測主題漂移,偏題時注入提醒把 agent 拉回正軌;有注入控制防每輪重複、狀態持久化重啟可復原。工具面:`gwm_on/off/status/update`。`cognition/global-working-memory`
 
 ### 🫀 Health System — _記憶有生命週期_
-基於遺忘曲線:被命中就**回血**、長期沒用就**衰退**;存取頻率越高衰退越慢。歸零的記憶走 trash 軟刪除、保留一段時間後永久銷毀。核心類別(identity/constraint/business/core_rule)與高重要性事實、技能膠囊**免於衰減**。衰退走 batch + 單筆 WAL,之後自動 `optimize()` 回復讀效。`lifecycle/cleanup-engine`
+每次 sweep 按 `0.15 × 經過小時 × max(0.2, 1 − 0.01 × accessCount)` 點線性扣健康度；健康度 100 且未存取時約 28 天歸零，非 skill 的 active v2 膠囊以四分之一速度衰減。核心類別(`identity`/`preference`/`constraint`/`business`/`decision`/`core_rule`)、重要度 ≥ 0.75(動態膠囊除外)與 skill capsule 不參與衰減。會排入 boost 的 Retriever 路徑及符合條件的非核心技能載入加分；`engine.recall()` 搜尋並重排結果，但不加分。健康度歸零與超期 `trashed` 都先進 JSON trash 保留 7 天再清除。`lifecycle/cleanup-engine` + `store/store-v4`
 
 ### 🌙 Night Consolidation — _AI 的睡眠整理_
 週期性離線整理:掃描記憶,由 LLM 判定每段該 `keep`/`merge`/`delete`/`update`,合併更新走 batch 單筆 WAL commit,且每個 LLM 決策**套用前都經 runtime 驗證**。精準重排程避免 timer drift。`lifecycle/night-consolidation`

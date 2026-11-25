@@ -105,6 +105,7 @@ interface TriggerEvent {
 export class HooksEngine {
   private cooldown: Map<string, CooldownEntry> = new Map();
   private qualityTracker: Map<string, HookQualityRecord> = new Map();
+  private qualityOutcomes: Map<string, boolean[]> = new Map();
   private hookEmbeddingCache: Map<string, number[]> = new Map();
   private readonly QUALITY_WINDOW = 10; // 只看最近10次觸發
   private readonly MAX_QUALITY_TRACKER_SIZE = 1000; // 防止無上限記憶體增長
@@ -133,6 +134,7 @@ export class HooksEngine {
       enabled: config.enabled ?? true,
       maxHooksPerMemory: config.maxHooksPerMemory ?? 3,
       maxTriggerDepth: config.maxTriggerDepth ?? 1,
+      // Low hooks score 0.4 and are intentionally below the default auto-trigger floor.
       minTriggerScore: config.minTriggerScore ?? 0.5,
       cooldownMs: config.cooldownMs ?? 3600000,
     };
@@ -543,7 +545,10 @@ low: 原文中較邊緣但仍具名的問法
       // LRU 淘汰：超過上限時移除最舊的 entry（Map 保留插入順序）
       if (!this.qualityTracker.has(keyword) && this.qualityTracker.size >= this.MAX_QUALITY_TRACKER_SIZE) {
         const oldest = this.qualityTracker.keys().next().value;
-        if (oldest) this.qualityTracker.delete(oldest);
+        if (oldest) {
+          this.qualityTracker.delete(oldest);
+          this.qualityOutcomes.delete(oldest);
+        }
       }
       this.qualityTracker.set(keyword, record);
     }
@@ -566,6 +571,11 @@ low: 原文中較邊緣但仍具名的問法
     const record = this.qualityTracker.get(keyword);
     if (!record) return;
 
+    const recentOutcomes = this.qualityOutcomes.get(keyword) ?? [];
+    recentOutcomes.push(wasRetained);
+    if (recentOutcomes.length > this.QUALITY_WINDOW) recentOutcomes.shift();
+    this.qualityOutcomes.set(keyword, recentOutcomes);
+
     if (wasRetained) {
       record.successCount++;
     } else {
@@ -573,8 +583,9 @@ low: 原文中較邊緣但仍具名的問法
     }
 
     // 重新計算調整後權重
-    const total = Math.min(record.triggerCount, this.QUALITY_WINDOW);
-    const recentRate = total > 0 ? record.successCount / total : 0.5;
+    const recentRate = recentOutcomes.length > 0
+      ? recentOutcomes.filter(Boolean).length / recentOutcomes.length
+      : 0.5;
 
     if (recentRate >= this.HIGH_SUCCESS_RATE) {
       record.adjustedNumericWeight = Math.min(1.0, record.currentNumericWeight * 1.1);
@@ -590,6 +601,7 @@ low: 原文中較邊緣但仍具名的問法
     if (record.triggerCount >= 5 && record.successCount === 0) {
       console.log(`[HooksEngine] Removing ineffective hook: ${keyword}`);
       this.qualityTracker.delete(keyword);
+      this.qualityOutcomes.delete(keyword);
       await this._deleteDBRecord(keyword);
     }
 

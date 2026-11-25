@@ -69,6 +69,80 @@ import {
 import { hashQuery } from './util/util-hash.js';
 import { describeMemoryTemporalProvenance } from './retrieval/temporal-provenance.js';
 import { annotateVersionRelations, groupVersionRelations, type VersionRelationGroup } from './retrieval/version-relations.js';
+import { beginAssembleProbe, writeCompactionProbe } from './probe/compaction-probe.js';
+
+function resolveSchedulingTimeZone(configured?: string): string {
+  let systemTimeZone = 'UTC';
+  try {
+    systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    // UTC is the final fallback when the runtime cannot report its local zone.
+  }
+  const candidate = configured ?? systemTimeZone;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: candidate });
+    return candidate;
+  } catch {
+    return configured ? systemTimeZone : 'UTC';
+  }
+}
+
+function zonedDateParts(timestamp: number, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+    second: Number(values.second),
+  };
+}
+
+function localDateTimeToTimestamp(
+  parts: { year: number; month: number; day: number; hour: number; minute: number; second?: number },
+  timeZone: string,
+): number {
+  const desiredUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second ?? 0);
+  let timestamp = desiredUtc;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = zonedDateParts(timestamp, timeZone);
+    const representedUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second);
+    const correction = desiredUtc - representedUtc;
+    timestamp += correction;
+    if (correction === 0) break;
+  }
+  return timestamp;
+}
+
+function nextDailyTimestamp(now: number, hour: number, timeZone: string): number {
+  const today = zonedDateParts(now, timeZone);
+  let target = { year: today.year, month: today.month, day: today.day, hour, minute: 0, second: 0 };
+  let timestamp = localDateTimeToTimestamp(target, timeZone);
+  if (timestamp <= now) {
+    const nextDate = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+    target = {
+      year: nextDate.getUTCFullYear(),
+      month: nextDate.getUTCMonth() + 1,
+      day: nextDate.getUTCDate(),
+      hour,
+      minute: 0,
+      second: 0,
+    };
+    timestamp = localDateTimeToTimestamp(target, timeZone);
+  }
+  return timestamp;
+}
 
 export interface MemoryRiverEngineDeps {
   paths: {
@@ -268,13 +342,13 @@ export class MemoryRiverEngine {
   private fallbackObserverRegistered = false;
   private cleanupEngineInstanceRegistered = false;
   private nightTimerId: ReturnType<typeof setTimeout> | null = null;
-  private nightIntervalId: ReturnType<typeof setInterval> | null = null;
+  private nightScheduleGeneration = 0;
   private nightHealthCheckIntervalId: ReturnType<typeof setInterval> | null = null;
   private nightStartupRecoveryTimerId: ReturnType<typeof setTimeout> | null = null;
   private nightConsolidatorIsRunning = false;
   private lastNightConsolidatorSuccessfulRunAt = 0;
   private cleanupTimeoutId: ReturnType<typeof setTimeout> | null = null;
-  private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
+  private cleanupScheduleGeneration = 0;
   private lastCleanupSuccessfulRunAt = 0;
   private activePluginConfig!: PluginConfig;
 
@@ -657,10 +731,10 @@ export class MemoryRiverEngine {
 
   init(): Promise<void> {
   if (this.pluginInitPromise) {
-    if (this.pluginInitialized && this.nightConsolidatorRef && !this.nightTimerId && !this.nightIntervalId) {
+    if (this.pluginInitialized && this.nightConsolidatorRef && !this.nightTimerId) {
       this.scheduleNightConsolidator();
     }
-    if (this.pluginInitialized && this.cleanupEngineRef && !this.cleanupTimeoutId && !this.cleanupIntervalId) {
+    if (this.pluginInitialized && this.cleanupEngineRef && !this.cleanupTimeoutId) {
       this.scheduleCleanupEngine();
     }
     return this.pluginInitPromise;
@@ -674,6 +748,8 @@ export class MemoryRiverEngine {
     await this.memoryStoreRef.ensureInitialized();
 
     this.graphStoreRef = new GraphStore(this.memoryStoreRef.db, this.memoryStoreRef.ssd, this.embedderRef, this.config.embedding.dimensions);
+    this.statusManagerRef?.setGraphStore(this.graphStoreRef);
+    this.cleanupEngineRef?.setGraphStore(this.graphStoreRef);
     this.hooksEngineRef = new HooksEngine(this.memoryStoreRef, this.embedderRef, this.config.hooks ?? {}, this.activeConcentrator, this.memoryStoreRef.db);
     this.hooksEngineRef.setGraphStore(this.graphStoreRef);
     await this.hooksEngineRef.loadStats();
@@ -694,6 +770,7 @@ export class MemoryRiverEngine {
           concentrator: this.activeConcentrator,
           statusManager: this.statusManagerRef!,
           notifier: this.deps.notifier,
+          embedder: this.embedderRef,
         },
         this.deps.paths.consolidationLog,
       );
@@ -717,13 +794,10 @@ export class MemoryRiverEngine {
 }
 
   clearNightConsolidatorTimers(): void {
+  this.nightScheduleGeneration += 1;
   if (this.nightTimerId) {
     clearTimeout(this.nightTimerId);
     this.nightTimerId = null;
-  }
-  if (this.nightIntervalId) {
-    clearInterval(this.nightIntervalId);
-    this.nightIntervalId = null;
   }
   if (this.nightHealthCheckIntervalId) {
     clearInterval(this.nightHealthCheckIntervalId);
@@ -852,69 +926,43 @@ export class MemoryRiverEngine {
   if (process.env.MR_OTTER_READONLY === '1') return;
   if (!this.nightConsolidatorRef) return;
   this.clearNightConsolidatorTimers();
-  const now = new Date();
-  const nextRun = new Date(now);
-  nextRun.setHours(3, 0, 0, 0);
-  if (nextRun.getTime() <= now.getTime()) nextRun.setDate(nextRun.getDate() + 1);
-  const scheduledFor = nextRun.getTime();
-  const scheduledRunId = randomUUID();
-  const msUntilFirstRun = nextRun.getTime() - now.getTime();
-  this.recordNightConsolidationStat({
-    runId: scheduledRunId,
-    phase: 'schedule_created',
-    ts: Date.now(),
-    scheduledFor,
-    metadata: buildNightRecoveryMetadata({ source: 'scheduled_timer' }),
-  });
-  console.log(`[NightConsolidator] timer scheduled, fires at ${nextRun.toISOString()} (${msUntilFirstRun} ms)`);
-  this.nightTimerId = setTimeout(() => {
-    const firedAt = Date.now();
+  const generation = this.nightScheduleGeneration;
+  const timeZone = resolveSchedulingTimeZone(this.config.concentration?.timezone);
+  const scheduleNextRun = () => {
+    if (generation !== this.nightScheduleGeneration) return;
+    const scheduledFor = nextDailyTimestamp(Date.now(), 3, timeZone);
+    const scheduledRunId = randomUUID();
+    const msUntilRun = scheduledFor - Date.now();
     this.recordNightConsolidationStat({
       runId: scheduledRunId,
-      phase: 'timer_fired',
-      ts: firedAt,
-      scheduledFor,
-      driftMs: firedAt - scheduledFor,
-      metadata: buildNightRecoveryMetadata({ source: 'scheduled_timer' }),
-    });
-    console.log(`[NightConsolidator] timer fired at ${new Date().toISOString()}`);
-    void this.tryRunNightConsolidator('scheduled_timer', scheduledRunId, scheduledFor);
-    let intervalScheduledFor = scheduledFor + 24 * 60 * 60 * 1000;
-    let intervalRunId = randomUUID();
-    this.recordNightConsolidationStat({
-      runId: intervalRunId,
       phase: 'schedule_created',
       ts: Date.now(),
-      scheduledFor: intervalScheduledFor,
+      scheduledFor,
       metadata: buildNightRecoveryMetadata({ source: 'scheduled_timer' }),
     });
-    this.nightIntervalId = setInterval(() => {
-      const intervalFiredAt = Date.now();
-      const currentRunId = intervalRunId;
-      const currentScheduledFor = intervalScheduledFor;
+    console.log(`[NightConsolidator] timer scheduled, fires at ${new Date(scheduledFor).toISOString()} (${msUntilRun} ms)`);
+    this.nightTimerId = setTimeout(async () => {
+      const firedAt = Date.now();
       this.recordNightConsolidationStat({
-        runId: currentRunId,
+        runId: scheduledRunId,
         phase: 'timer_fired',
-        ts: intervalFiredAt,
-        scheduledFor: currentScheduledFor,
-        driftMs: intervalFiredAt - currentScheduledFor,
+        ts: firedAt,
+        scheduledFor,
+        driftMs: firedAt - scheduledFor,
         metadata: buildNightRecoveryMetadata({ source: 'scheduled_timer' }),
       });
       console.log(`[NightConsolidator] timer fired at ${new Date().toISOString()}`);
-      void this.tryRunNightConsolidator('scheduled_timer', currentRunId, currentScheduledFor);
-      intervalScheduledFor = currentScheduledFor + 24 * 60 * 60 * 1000;
-      intervalRunId = randomUUID();
-      this.recordNightConsolidationStat({
-        runId: intervalRunId,
-        phase: 'schedule_created',
-        ts: Date.now(),
-        scheduledFor: intervalScheduledFor,
-        metadata: buildNightRecoveryMetadata({ source: 'scheduled_timer' }),
-      });
-    }, 24 * 60 * 60 * 1000);
-    this.nightIntervalId.unref?.();
-  }, msUntilFirstRun);
-  this.nightTimerId.unref?.();
+      try {
+        await this.tryRunNightConsolidator('scheduled_timer', scheduledRunId, scheduledFor);
+      } catch (err: any) {
+        console.warn('[NightConsolidator] scheduled run failed:', err?.message ?? err);
+      } finally {
+        scheduleNextRun();
+      }
+    }, msUntilRun);
+    this.nightTimerId.unref?.();
+  };
+  scheduleNextRun();
   this.nightHealthCheckIntervalId = setInterval(() => {
     void this.tryRunNightConsolidator('health_check_recovery').catch((err: any) => {
       console.warn('[NightConsolidator] health-check failed:', err?.message ?? err);
@@ -927,17 +975,14 @@ export class MemoryRiverEngine {
     });
   }, NIGHT_STARTUP_RECOVERY_DELAY_MS);
   this.nightStartupRecoveryTimerId.unref?.();
-  console.log(`[memory-river] NightConsolidator scheduled; next run: ${nextRun.toISOString()}`);
+  console.log('[memory-river] NightConsolidator scheduled');
 }
 
   clearCleanupEngineTimers(): void {
+  this.cleanupScheduleGeneration += 1;
   if (this.cleanupTimeoutId) {
     clearTimeout(this.cleanupTimeoutId);
     this.cleanupTimeoutId = null;
-  }
-  if (this.cleanupIntervalId) {
-    clearInterval(this.cleanupIntervalId);
-    this.cleanupIntervalId = null;
   }
 }
 
@@ -945,6 +990,7 @@ export class MemoryRiverEngine {
   if (!this.cleanupEngineRef) return;
   try {
     const result = await this.cleanupEngineRef.runSmartCleanup(source);
+    if (result.skipped) return;
     this.recordCleanupSuccess(result);
   } catch (err: any) {
     console.error(`[CleanupEngine] run failed, source=${source}:`, err);
@@ -1017,6 +1063,7 @@ export class MemoryRiverEngine {
     maxDelete: mode.maxDelete,
     maxDecay: mode.maxDecay,
   });
+  if (result.skipped) return;
   if (result.deferredDelete > 0 || result.deferredDecay > 0) {
     console.log(
       `[CleanupEngine] startup-recovery: hit limit, deferred ${result.deferredDelete} delete candidates and ${result.deferredDecay} decay candidates to next run`
@@ -1032,6 +1079,7 @@ export class MemoryRiverEngine {
   if (process.env.MR_OTTER_READONLY === '1') return;
   if (!this.cleanupEngineRef) return;
   this.clearCleanupEngineTimers();
+  const generation = this.cleanupScheduleGeneration;
 
   const nowMs = Date.now();
   const state = readCleanupState(path.join(this.deps.paths.stateDir, 'cleanup-state.json'));
@@ -1046,20 +1094,22 @@ export class MemoryRiverEngine {
     console.log(`[CleanupEngine] startup-recovery skipped: last success was ${this.formatHours(decision.hoursSinceLastSuccess)}h ago`);
   }
 
-  const now = new Date();
-  const nextRun = new Date(now);
-  nextRun.setHours(4, 0, 0, 0);
-  if (nextRun.getTime() <= now.getTime()) nextRun.setDate(nextRun.getDate() + 1);
-  const msUntilFirstRun = nextRun.getTime() - now.getTime();
-  console.log(`[CleanupEngine] timer scheduled, fires at ${nextRun.toISOString()} (${msUntilFirstRun} ms)`);
-  this.cleanupTimeoutId = setTimeout(() => {
-    console.log(`[CleanupEngine] timer fired at ${new Date().toISOString()}, source=daily-schedule`);
-    void this.runCleanupEngineNow('daily-schedule');
-    this.cleanupIntervalId = setInterval(() => {
+  const timeZone = resolveSchedulingTimeZone(this.config.concentration?.timezone);
+  const scheduleNextRun = () => {
+    if (generation !== this.cleanupScheduleGeneration) return;
+    const scheduledFor = nextDailyTimestamp(Date.now(), 4, timeZone);
+    const msUntilRun = scheduledFor - Date.now();
+    console.log(`[CleanupEngine] timer scheduled, fires at ${new Date(scheduledFor).toISOString()} (${msUntilRun} ms)`);
+    this.cleanupTimeoutId = setTimeout(async () => {
       console.log(`[CleanupEngine] timer fired at ${new Date().toISOString()}, source=daily-schedule`);
-      void this.runCleanupEngineNow('daily-schedule');
-    }, 24 * 60 * 60 * 1000);
-  }, msUntilFirstRun);
+      try {
+        await this.runCleanupEngineNow('daily-schedule');
+      } finally {
+        scheduleNextRun();
+      }
+    }, msUntilRun);
+  };
+  scheduleNextRun();
 }
 
 /** 提取訊息陣列 */
@@ -1601,12 +1651,22 @@ export class MemoryRiverEngine {
   };
 }
 
-  async executeGwmOn(params: any) {
+  getCurrentSessionKey(): string | undefined {
+  const sessionKey = this.lastObservedSessionIdentity?.sessionKey;
+  return typeof sessionKey === 'string' && sessionKey.trim().length > 0 ? sessionKey.trim() : undefined;
+}
+
+  private gwmStateFor(sessionKey?: string) {
+  const gwm = this.gwmRef as any;
+  return typeof gwm?.getState === 'function' ? gwm.getState(sessionKey) : gwm?.state ?? null;
+}
+
+  async executeGwmOn(params: any, sessionKey?: string) {
   if (!this.gwmRef) return this.gwmNotInitializedResult();
-  const result = await this.gwmRef.gwmOn(params.taskName, params.taskDescription, params.keywords);
+  const result = await this.gwmRef.gwmOn(params.taskName, params.taskDescription, params.keywords, sessionKey);
   const sessionIdentity = this.lastObservedSessionIdentity;
-  const sessionKey = sessionIdentity?.canonicalKey ?? 'global';
-  const sessionState = this.getOrCreateGwmSessionState(sessionKey);
+  const trackingKey = sessionIdentity?.canonicalKey ?? 'global';
+  const sessionState = this.getOrCreateGwmSessionState(trackingKey);
   sessionState.injectionCount = 0;
   sessionState.turnIndex = 0;
   sessionState.lastInjectionTurnIndex = null;
@@ -1614,7 +1674,7 @@ export class MemoryRiverEngine {
   const llmIdentity = sessionIdentity
     ? this.getRecentLlmIdentityForKeys(this.attributionKeysFromIdentity(sessionIdentity))
     : null;
-  const gwmState = (this.gwmRef as any)?.state;
+  const gwmState = this.gwmStateFor(sessionKey);
   this.recordGwmEffectiveness(this.retrieverRef?.getStore?.() ?? this.memoryStoreRef, {
     event: 'gwm_lifecycle',
     outcome: 'on',
@@ -1627,26 +1687,26 @@ export class MemoryRiverEngine {
       llmProvider: llmIdentity?.provider ?? null,
       taskDescriptionHash: gwmState?.taskDescription ? hashQuery(gwmState.taskDescription) : hashQuery(String(params.taskDescription ?? '')),
       roundsSinceLastInjection: null,
-      sessionTrackingKey: sessionKey,
+      sessionTrackingKey: trackingKey,
       source: 'tool_call_proxy',
     },
   });
   return { content: [{ type: 'text', text: result }] };
 }
 
-  async executeGwmOff() {
+  async executeGwmOff(sessionKey?: string) {
   if (!this.gwmRef) return this.gwmNotInitializedResult();
   const sessionIdentity = this.lastObservedSessionIdentity;
-  const sessionKey = sessionIdentity?.canonicalKey ?? 'global';
-  const sessionState = this.getOrCreateGwmSessionState(sessionKey);
+  const trackingKey = sessionIdentity?.canonicalKey ?? 'global';
+  const sessionState = this.getOrCreateGwmSessionState(trackingKey);
   const llmIdentity = sessionIdentity
     ? this.getRecentLlmIdentityForKeys(this.attributionKeysFromIdentity(sessionIdentity))
     : null;
-  const gwmStateBeforeOff = (this.gwmRef as any)?.state;
+  const gwmStateBeforeOff = this.gwmStateFor(sessionKey);
   const roundsSinceLastInjection = sessionState.lastInjectionTurnIndex === null
     ? null
     : Math.max(0, sessionState.turnIndex - sessionState.lastInjectionTurnIndex);
-  const result = await this.gwmRef.gwmOff();
+  const result = await this.gwmRef.gwmOff(sessionKey);
   this.recordGwmEffectiveness(this.retrieverRef?.getStore?.() ?? this.memoryStoreRef, {
     event: 'gwm_lifecycle',
     outcome: 'off',
@@ -1659,7 +1719,7 @@ export class MemoryRiverEngine {
       llmProvider: llmIdentity?.provider ?? null,
       taskDescriptionHash: gwmStateBeforeOff?.taskDescription ? hashQuery(gwmStateBeforeOff.taskDescription) : null,
       roundsSinceLastInjection,
-      sessionTrackingKey: sessionKey,
+      sessionTrackingKey: trackingKey,
       closeReason: 'tool_call_unknown_actor',
       source: 'tool_call_proxy',
     },
@@ -1668,26 +1728,26 @@ export class MemoryRiverEngine {
   return { content: [{ type: 'text', text: result }] };
 }
 
-  executeGwmStatus() {
+  executeGwmStatus(sessionKey?: string) {
   if (!this.gwmRef) return this.gwmNotInitializedResult();
-  const result = this.gwmRef.gwmStatus();
+  const result = this.gwmRef.gwmStatus(sessionKey);
   return { content: [{ type: 'text', text: result }] };
 }
 
-  async executeGwmUpdate(params: any) {
+  async executeGwmUpdate(params: any, sessionKey?: string) {
   if (!this.gwmRef) return this.gwmNotInitializedResult();
   const sessionIdentity = this.lastObservedSessionIdentity;
-  const sessionKey = sessionIdentity?.canonicalKey ?? 'global';
-  const sessionState = this.getOrCreateGwmSessionState(sessionKey);
+  const trackingKey = sessionIdentity?.canonicalKey ?? 'global';
+  const sessionState = this.getOrCreateGwmSessionState(trackingKey);
   const llmIdentity = sessionIdentity
     ? this.getRecentLlmIdentityForKeys(this.attributionKeysFromIdentity(sessionIdentity))
     : null;
-  const gwmStateBeforeUpdate = (this.gwmRef as any)?.state;
+  const gwmStateBeforeUpdate = this.gwmStateFor(sessionKey);
   const oldTaskDescriptionHash = gwmStateBeforeUpdate?.taskDescription
     ? hashQuery(gwmStateBeforeUpdate.taskDescription)
     : null;
-  const result = await this.gwmRef.gwmUpdate(params);
-  const gwmStateAfterUpdate = (this.gwmRef as any)?.state;
+  const result = await this.gwmRef.gwmUpdate(params, sessionKey);
+  const gwmStateAfterUpdate = this.gwmStateFor(sessionKey);
   const roundsSinceLastInjection = sessionState.lastInjectionTurnIndex === null
     ? null
     : Math.max(0, sessionState.turnIndex - sessionState.lastInjectionTurnIndex);
@@ -1705,7 +1765,7 @@ export class MemoryRiverEngine {
       oldTaskDescriptionHash,
       newTaskDescriptionHash: gwmStateAfterUpdate?.taskDescription ? hashQuery(gwmStateAfterUpdate.taskDescription) : oldTaskDescriptionHash,
       roundsSinceLastInjection,
-      sessionTrackingKey: sessionKey,
+      sessionTrackingKey: trackingKey,
       source: 'tool_call_proxy',
     },
   });
@@ -1721,10 +1781,10 @@ export class MemoryRiverEngine {
       recordPluginInitSmokeStat: (store: any, outcome: 'succeeded' | 'failed', err?: any) => this.recordPluginInitSmokeStat(store, outcome, err),
       executeMemoryRecall: (params: any, _config: PluginConfig = this.config) => this.executeMemoryRecall(params),
       executeMemoryStore: (params: any) => this.executeMemoryStore(params),
-      executeGwmOn: (params: any) => this.executeGwmOn(params),
-      executeGwmOff: () => this.executeGwmOff(),
-      executeGwmStatus: () => this.executeGwmStatus(),
-      executeGwmUpdate: (params: any) => this.executeGwmUpdate(params),
+      executeGwmOn: (params: any, sessionKey?: string) => this.executeGwmOn(params, sessionKey),
+      executeGwmOff: (sessionKey?: string) => this.executeGwmOff(sessionKey),
+      executeGwmStatus: (sessionKey?: string) => this.executeGwmStatus(sessionKey),
+      executeGwmUpdate: (params: any, sessionKey?: string) => this.executeGwmUpdate(params, sessionKey),
     };
   }
 
@@ -1799,10 +1859,13 @@ export class MemoryRiverEngine {
     const sessionKey = typeof event?.sessionKey === 'string' && event.sessionKey.trim().length > 0
       ? event.sessionKey.trim()
       : sessionId;
-    if (this.gwmRef?.isActive()) {
+    const gwmSessionKey = typeof event?.sessionKey === 'string' && event.sessionKey.trim().length > 0
+      ? event.sessionKey.trim()
+      : undefined;
+    if (this.gwmRef?.isActive(gwmSessionKey)) {
       const sessionState = this.getOrCreateGwmSessionState(sessionKey);
       const llmIdentity = this.getRecentLlmIdentityForKeys(this.attributionKeysFromLlmOutput(event, {}));
-      const gwmState = (this.gwmRef as any)?.state;
+      const gwmState = this.gwmStateFor(gwmSessionKey);
       const roundsSinceLastInjection = sessionState.lastInjectionTurnIndex === null
         ? null
         : Math.max(0, sessionState.turnIndex - sessionState.lastInjectionTurnIndex);
@@ -1864,6 +1927,7 @@ export class MemoryRiverEngine {
   async assemble(...args: any[]): Promise<any> {
   let msgs = this.extractMessages(...args);
   const sessionIdentity: SessionIdentity = resolveSessionIdentityFromArgs(...args);
+  const gwmSessionKey = sessionIdentity.sessionKey ?? undefined;
   this.lastObservedSessionIdentity = sessionIdentity;
   const attributionRequestKey = this.extractAttributionRequestKeyFromArgs(...args);
   const onAutoRecallResults = this.extractAutoRecallResultsObserverFromArgs(...args);
@@ -1888,51 +1952,114 @@ export class MemoryRiverEngine {
   if (this.activeConcentrator && this.retrieverRef) {
     try {
       const canonicalKey = sessionIdentity.canonicalKey;
+      const assembleProbe = beginAssembleProbe(canonicalKey);
+      const gateStartedAt = Date.now();
+      const assembleWatermarkAtEntry = this.sessionTokenWatermark.get(canonicalKey) ?? 0;
+      const compactWatermarkAtEntry = this.sessionCompactWatermark.get(canonicalKey) ?? 0;
+      const msgCountAtEntry = msgs.length;
+      let decision: 'compress' | 'skip' | 'disabled' | null = null;
+      let reason: string | null = null;
+      let concentrateStatus: string | null = null;
+      let wasConcentrated: boolean | null = null;
+      let compressedTokens: number | null = null;
+      let watermarkBeforeWrite: number | null = null;
+      let watermarkWritten: number | null = null;
+      let error: string | null = null;
+      let totalTokens: number | null = null;
+      let realTokens: number | null = null;
+      let toolTokens: number | null = null;
 
-      const totalTokens = this.activeConcentrator.estimateTokens(msgs);
-      const tokenBreakdown = this.activeConcentrator.estimateTokenBreakdown(msgs);
-      const assembleWatermark = this.sessionTokenWatermark.get(canonicalKey) ?? 0;
-      const compactWatermark = this.sessionCompactWatermark.get(canonicalKey) ?? 0;
-      const tokenGrowth = totalTokens - assembleWatermark;
-      const exceedsAssembleWatermark = tokenGrowth >= WATERMARK_INTERVAL;
-      const exceedsCompactWatermark = totalTokens > compactWatermark + WATERMARK_INTERVAL;
-      // Confirmatory flag: never run assemble-time concentration, which writes sessionTokenWatermark
-      // (a cross-question in-memory gate). For cat1 the per-question context is far below the 20k
-      // WATERMARK_INTERVAL so this never fires anyway, but gate it to keep each question independent.
-      const shouldConcentrate = process.env.MR_OTTER_READONLY !== '1'
-        && exceedsAssembleWatermark && exceedsCompactWatermark;
-      const reason = shouldConcentrate
-        ? 'dual-watermark-pass'
-        : !exceedsAssembleWatermark
-          ? `growth=${tokenGrowth} < interval=${WATERMARK_INTERVAL}`
-          : `total=${totalTokens} <= compact+interval=${compactWatermark + WATERMARK_INTERVAL}`;
-      console.log(`[concentrator] tokens: real=${tokenBreakdown.realTokens} tool=${tokenBreakdown.toolTokens} total=${tokenBreakdown.total} assembleWatermark=${assembleWatermark} compactWatermark=${compactWatermark} decision=${shouldConcentrate ? 'compress' : 'skip'} reason=${reason}`);
+      try {
+        totalTokens = this.activeConcentrator.estimateTokens(msgs);
+        const tokenBreakdown = this.activeConcentrator.estimateTokenBreakdown(msgs);
+        realTokens = tokenBreakdown.realTokens;
+        toolTokens = tokenBreakdown.toolTokens;
+        const assembleWatermark = assembleWatermarkAtEntry;
+        const compactWatermark = compactWatermarkAtEntry;
+        const tokenGrowth = totalTokens - assembleWatermark;
+        const exceedsAssembleWatermark = tokenGrowth >= WATERMARK_INTERVAL;
+        const exceedsCompactWatermark = totalTokens > compactWatermark + WATERMARK_INTERVAL;
+        // Confirmatory flag: never run assemble-time concentration, which writes sessionTokenWatermark
+        // (a cross-question in-memory gate). For cat1 the per-question context is far below the 20k
+        // WATERMARK_INTERVAL so this never fires anyway, but gate it to keep each question independent.
+        const assembleConcentrationEnabled = this.activePluginConfig.concentration?.assembleConcentration !== false;
+        const shouldConcentrate = assembleConcentrationEnabled
+          && process.env.MR_OTTER_READONLY !== '1'
+          && exceedsAssembleWatermark && exceedsCompactWatermark;
+        decision = !assembleConcentrationEnabled ? 'disabled' : shouldConcentrate ? 'compress' : 'skip';
+        reason = !assembleConcentrationEnabled
+          ? 'assemble-concentration-disabled'
+          : shouldConcentrate
+          ? 'dual-watermark-pass'
+          : !exceedsAssembleWatermark
+            ? `growth=${tokenGrowth} < interval=${WATERMARK_INTERVAL}`
+            : `total=${totalTokens} <= compact+interval=${compactWatermark + WATERMARK_INTERVAL}`;
+        console.log(`[concentrator] tokens: real=${tokenBreakdown.realTokens} tool=${tokenBreakdown.toolTokens} total=${tokenBreakdown.total} assembleWatermark=${assembleWatermark} compactWatermark=${compactWatermark} decision=${decision} reason=${reason}`);
 
-      // 增量觸發：token 增長量超過 WATERMARK_INTERVAL 才進入 concentrate 檢查
-      if (shouldConcentrate) {
-        const result = await this.activeConcentrator.concentrate(msgs, false, false, { sessionIdentity });
-        if (result && result.wasConcentrated) {
-          msgs = result.messages;
-          // assemble 壓縮只影響本輪上下文，不會立即持久化回 session file。
-          // 因此 watermark 必須記錄本次已處理過的「原始 token 規模」，
-          // 否則下一輪看到同一批完整歷史時會再次重複濃縮。
-          const compressedTokens = this.activeConcentrator.estimateTokens(msgs);
-          this.setWatermark(canonicalKey, totalTokens);
-          console.log(`[memory-river] Compaction succeeded: ${totalTokens} -> ${compressedTokens} tokens; watermark recorded original baseline ${totalTokens}`);
-          if (this.activePluginConfig.concentration?.asyncCompactAfterAssemble === true) {
-            this.enqueueAsyncCompact({
-              trackingKey: canonicalKey,
-              sessionId: sessionIdentity.sessionId ?? undefined,
-              sessionKey: sessionIdentity.sessionKey ?? undefined,
-              compressedTokens,
-              originalTokens: totalTokens,
-              timestamp: Date.now(),
-            });
+        // 增量觸發：token 增長量超過 WATERMARK_INTERVAL 才進入 concentrate 檢查
+        if (shouldConcentrate) {
+          const concentrateContext = assembleProbe
+            ? { sessionIdentity, evalId: assembleProbe.evalId }
+            : { sessionIdentity };
+          const result = await this.activeConcentrator.concentrate(msgs, false, false, concentrateContext);
+          concentrateStatus = result?.status ?? null;
+          wasConcentrated = result?.wasConcentrated ?? false;
+          if (result && result.wasConcentrated) {
+            msgs = result.messages;
+            // assemble 壓縮只影響本輪上下文，不會立即持久化回 session file。
+            // 因此 watermark 必須記錄本次已處理過的「原始 token 規模」，
+            // 否則下一輪看到同一批完整歷史時會再次重複濃縮。
+            compressedTokens = this.activeConcentrator.estimateTokens(msgs);
+            watermarkBeforeWrite = this.sessionTokenWatermark.get(canonicalKey) ?? 0;
+            this.setWatermark(canonicalKey, totalTokens);
+            watermarkWritten = totalTokens;
+            console.log(`[memory-river] Compaction succeeded: ${totalTokens} -> ${compressedTokens} tokens; watermark recorded original baseline ${totalTokens}`);
+            if (this.activePluginConfig.concentration?.asyncCompactAfterAssemble === true) {
+              this.enqueueAsyncCompact({
+                trackingKey: canonicalKey,
+                sessionId: sessionIdentity.sessionId ?? undefined,
+                sessionKey: sessionIdentity.sessionKey ?? undefined,
+                compressedTokens,
+                originalTokens: totalTokens,
+                timestamp: Date.now(),
+              });
+            }
+          } else {
+            // 未壓縮：記錄當前位置（下次再漲 20k 才重新檢查）
+            watermarkBeforeWrite = this.sessionTokenWatermark.get(canonicalKey) ?? 0;
+            this.setWatermark(canonicalKey, totalTokens);
+            watermarkWritten = totalTokens;
+            console.log(`[memory-river] Dynamic watermark not reached; next check at ~${totalTokens + WATERMARK_INTERVAL} tokens`);
           }
-        } else {
-          // 未壓縮：記錄當前位置（下次再漲 20k 才重新檢查）
-          this.setWatermark(canonicalKey, totalTokens);
-          console.log(`[memory-river] Dynamic watermark not reached; next check at ~${totalTokens + WATERMARK_INTERVAL} tokens`);
+        }
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+        throw err;
+      } finally {
+        if (assembleProbe) {
+          writeCompactionProbe({
+            kind: 'assemble_gate',
+            evalId: assembleProbe.evalId,
+            canonicalKey,
+            msgCount: msgCountAtEntry,
+            totalTokens,
+            realTokens,
+            toolTokens,
+            assembleWatermarkAtEntry,
+            compactWatermarkAtEntry,
+            decision,
+            reason,
+            inflightAtEntry: assembleProbe.inflightAtEntry,
+            inflightMaxDuring: assembleProbe.inflightMaxDuring,
+            assembleWatermarkBeforeWrite: watermarkBeforeWrite,
+            watermarkWritten,
+            concentrateStatus,
+            wasConcentrated,
+            compressedTokens,
+            durationMs: Date.now() - gateStartedAt,
+            error,
+          });
+          assembleProbe.leave();
         }
       }
     } catch (err) {
@@ -1953,9 +2080,9 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
 
     if (userText && userText.trim().length < 5) {
       // 繞過 TS 檢查提取 state，並加入嚴格空值保護
-      const gwmState = (this.gwmRef as any)?.state;
+      const gwmState = this.gwmStateFor(gwmSessionKey);
 
-      if (this.gwmRef && this.gwmRef.isActive() && gwmState?.keywords && gwmState.keywords.length > 0) {
+      if (this.gwmRef && this.gwmRef.isActive(gwmSessionKey) && gwmState?.keywords && gwmState.keywords.length > 0) {
         gwmOriginalUserText = userText;
         gwmKeywords = gwmState.keywords;
         gwmOriginalQueryHash = hashQuery(userText);
@@ -2183,12 +2310,12 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
   // =========================================================
   // 【Step 4 (原 Step 3): GWM 任務目標維護 (注入陣列底部)】
   // =========================================================
-  if (this.gwmRef && this.gwmRef.isActive()) {
+  if (this.gwmRef && this.gwmRef.isActive(gwmSessionKey)) {
     try {
       const sessionState = this.getOrCreateGwmSessionState(sessionIdentity.canonicalKey);
       const lastUserMsg = this.extractLastUserMessage(msgs);
       if (lastUserMsg) sessionState.turnIndex += 1;
-      const drift: DriftResult = await this.gwmRef.detectDrift(msgs);
+      const drift: DriftResult = await this.gwmRef.detectDrift(msgs, gwmSessionKey);
       if (lastUserMsg && sessionState.pendingEpisode) {
         const completedEpisode = sessionState.pendingEpisode;
         const llmIdentity = this.getRecentLlmIdentityForKeys(this.attributionKeysFromIdentity(sessionIdentity));
@@ -2216,12 +2343,12 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
         });
         sessionState.pendingEpisode = null;
       }
-      if (drift.isDrifting && this.gwmRef.shouldInject()) {
-        const reminder = this.gwmRef.getReminderMessage();
+      if (drift.isDrifting && this.gwmRef.shouldInject(gwmSessionKey)) {
+        const reminder = this.gwmRef.getReminderMessage(gwmSessionKey);
         if (reminder) {
           const driftQueryHash = hashQuery(lastUserMsg ?? '');
           const llmIdentity = this.getRecentLlmIdentityForKeys(this.attributionKeysFromIdentity(sessionIdentity));
-          const gwmStateBeforeInject = (this.gwmRef as any)?.state;
+          const gwmStateBeforeInject = this.gwmStateFor(gwmSessionKey);
           const preInjectDriftRoundCount = typeof gwmStateBeforeInject?.driftRoundCount === 'number'
             ? gwmStateBeforeInject.driftRoundCount
             : null;
@@ -2267,10 +2394,10 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
             llmProvider: llmIdentity?.provider ?? null,
           };
           sessionState.lastInjectionTurnIndex = sessionState.turnIndex;
-          await this.gwmRef.markInjected();
+          await this.gwmRef.markInjected(gwmSessionKey);
           console.log(`[memory-river] Drift detected: topic changed (similarity: ${drift.similarity.toFixed(2)}); reminder injected`);
 
-          const gwmState = (this.gwmRef as any)?.state;
+          const gwmState = this.gwmStateFor(gwmSessionKey);
           this.recordGwmEffectiveness(this.retrieverRef?.getStore?.() ?? this.memoryStoreRef, {
             event: 'gwm_drift_injected',
             outcome: 'injected',
@@ -2589,6 +2716,11 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
       exhaustive: params.exhaustive === true,
     });
 
+    if (result && result.status !== 'complete') {
+      console.warn(`[memory-river] compact: concentration status=${result.status}; skipping write-back`);
+      return { ok: true, compacted: false, reason: result.status };
+    }
+
     if (!result?.wasConcentrated || !result.messages) {
       console.warn('[memory-river] compact: compaction failed or returned no result');
       return { ok: true, compacted: false };
@@ -2599,9 +2731,14 @@ if (this.isAutoRecallEnabled && this.retrieverRef) {
     if (sessionHeader) newLines.push(sessionHeader);
 
     for (const msg of result.messages) {
+      const messageTs = typeof msg.timestamp === 'string'
+        ? Date.parse(msg.timestamp)
+        : typeof msg.timestamp === 'number'
+          ? msg.timestamp
+          : NaN;
       newLines.push(JSON.stringify({
         type: 'message',
-        timestamp: new Date().toISOString(),
+        timestamp: Number.isFinite(messageTs) ? new Date(messageTs).toISOString() : new Date().toISOString(),
         message: msg,
       }));
     }

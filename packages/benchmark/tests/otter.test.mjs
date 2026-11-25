@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as otter from '../dist/agent/otter.js';
 import { OTTER_TOOLS, turnText } from '../dist/agent/otter.js';
 import { runToolLoop } from '../dist/harness/tool-llm.js';
 
@@ -11,6 +12,21 @@ function completion(message, finishReason = 'stop', usage = { promptTokens: 0, c
     usage,
   };
 }
+
+test('Otter memory writes default to read-only and require an explicit zero to enable', () => {
+  const original = process.env.MR_OTTER_READONLY;
+  try {
+    delete process.env.MR_OTTER_READONLY;
+    assert.equal(otter.otterReadonlyEnabled?.(), true);
+    process.env.MR_OTTER_READONLY = '1';
+    assert.equal(otter.otterReadonlyEnabled?.(), true);
+    process.env.MR_OTTER_READONLY = '0';
+    assert.equal(otter.otterReadonlyEnabled?.(), false);
+  } finally {
+    if (original === undefined) delete process.env.MR_OTTER_READONLY;
+    else process.env.MR_OTTER_READONLY = original;
+  }
+});
 
 test('turnText includes the UTC date from rehydrated transcript timestamps', () => {
   const timestamp = Date.parse('2023-05-07T00:00:00Z');

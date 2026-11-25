@@ -10,6 +10,7 @@ import {
   ConcentratorAdapter,
   findProbeTextMismatchDetail,
   logProbeTextMismatchDetail,
+  matchSourceEntryIds,
 } from '../dist/distill/concentrator-adapter.js';
 import {
   createTranscriptArchive,
@@ -425,6 +426,95 @@ test('concentrate writes matched sourceEntryIds into capsule metadata', async ()
       lastEntryId: expectedIds[expectedIds.length - 1],
       count: expectedIds.length,
     });
+  });
+});
+
+test('matchSourceEntryIds exports the exact all-pairs match and derived entry IDs', () => {
+  const messages = [
+    { role: 'user', content: 'first question', timestamp: 1710001500000 },
+    { role: 'assistant', content: 'first answer', timestamp: 1710001500001 },
+    { role: 'user', content: 'second question', timestamp: 1710001501000 },
+    { role: 'assistant', content: 'second answer', timestamp: 1710001501001 },
+  ];
+  const logs = [];
+  const originalLog = console.log;
+  let result;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    result = matchSourceEntryIds(messages, [
+      { entryId: 17, user: 'first question', assistant: 'first answer', timestamp: 1710001500000 },
+      { entryId: 18, user: 'second question', assistant: 'second answer', timestamp: 1710001501000 },
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.deepEqual(logs, []);
+  assert.deepEqual(result, {
+    summarizePairCount: 2,
+    candidateCount: 2,
+    matched: true,
+    matchedEntryIds: [17, 18],
+    sourceEntryIds: [17, 18],
+  });
+});
+
+test('concentrate records matched, mismatch, and missing-identity sourceEntryIdsStatus', async () => {
+  await withTempTranscript('source-entry-status-', async ({ root }) => {
+    const baseTimestamp = 1710002500000;
+    const messages = [
+      { role: 'user', content: 'status question', timestamp: baseTimestamp },
+      { role: 'assistant', content: 'status answer', timestamp: baseTimestamp + 1 },
+    ];
+    const run = async (identity) => {
+      const writes = [];
+      const adapter = makeCaptureAdapter(root, writes);
+      adapter.callWithFallback = async () => JSON.stringify({
+        capsule: 'status capsule',
+        notes: [{ text: 'status note', category: 'fact', importance: 0.8, tags: [] }],
+        confidence: 0.9,
+      });
+      await adapter.concentrate(messages, false, true, identity ? { sessionIdentity: identity } : {});
+      return writes;
+    };
+
+    const matchedIdentity = makeIdentity('status-matched');
+    archiveSnapshot(matchedIdentity, messages);
+    const matchedWrites = await run(matchedIdentity);
+    assert.equal(matchedWrites.length, 2);
+    for (const write of matchedWrites) {
+      assert.deepEqual(write.opts.metadata.sourceEntryIdsStatus, { matched: true });
+      assert.equal(write.opts.metadata.sourceEntryIds.length, 1);
+    }
+
+    const mismatchIdentity = makeIdentity('status-mismatch');
+    archiveSnapshot(mismatchIdentity, [
+      { role: 'user', content: 'different question', timestamp: baseTimestamp },
+      { role: 'assistant', content: 'different answer', timestamp: baseTimestamp + 1 },
+    ]);
+    const mismatchWrites = await run(mismatchIdentity);
+    assert.equal(mismatchWrites.length, 2);
+    for (const write of mismatchWrites) {
+      assert.deepEqual(write.opts.metadata.sourceEntryIdsStatus, {
+        matched: false,
+        reason: 'text_mismatch',
+        summarizePairCount: 1,
+        candidateCount: 1,
+      });
+      assert.equal(Object.hasOwn(write.opts.metadata, 'sourceEntryIds'), false);
+    }
+
+    const missingIdentityWrites = await run(undefined);
+    assert.equal(missingIdentityWrites.length, 2);
+    for (const write of missingIdentityWrites) {
+      assert.deepEqual(write.opts.metadata.sourceEntryIdsStatus, {
+        matched: false,
+        reason: 'no_session_identity',
+        summarizePairCount: 1,
+        candidateCount: 0,
+      });
+      assert.equal(Object.hasOwn(write.opts.metadata, 'sourceEntryIds'), false);
+    }
   });
 });
 

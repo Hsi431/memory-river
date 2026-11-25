@@ -4,6 +4,7 @@ if (typeof (globalThis as any).runtimeContext === 'undefined') {
 }
 
 import * as fs from 'fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Type } from '@sinclair/typebox';
@@ -29,9 +30,15 @@ import { shouldRunStartupRecovery, type CleanupState } from '@memory-river/core/
 import type { AsyncCompactRequest } from '@memory-river/core/pipeline/compact-request';
 export type { AsyncCompactRequest } from '@memory-river/core/pipeline/compact-request';
 
-const homeDir = process.env.HOME ?? '/root';
+export function resolveDefaultRamDbPath(sharedMemoryAvailable = fs.existsSync('/dev/shm'), temporaryDirectory = os.tmpdir()): string {
+  const ramRoot = sharedMemoryAvailable ? '/dev/shm' : temporaryDirectory;
+  return path.join(ramRoot, 'memory-river', 'lancedb-v6-qwen');
+}
+
+const homeDir = os.homedir();
 const dataDir = path.join(homeDir, '.openclaw', 'memory');
-const resolvedPaths = resolvePaths({ dataDir, ramDir: '/dev/shm/memory-river/lancedb-v6-qwen' });
+const ramDbPath = resolveDefaultRamDbPath();
+const resolvedPaths = resolvePaths({ dataDir, ramDir: ramDbPath });
 const workspaceDir = process.env.OPENCLAW_WORKSPACE ?? path.join(homeDir, '.openclaw', 'workspace');
 const paths = {
   ...resolvedPaths,
@@ -43,7 +50,7 @@ const transcriptArchive = createTranscriptArchive(paths.transcriptsDir);
 const DEFAULT_CONFIG: Required<PluginConfig> = {
   ...DEFAULT_CONFIG_WITHOUT_PATHS,
   dbPath: path.join(dataDir, 'lancedb-v6-qwen'),
-  ramDbPath: '/dev/shm/memory-river/lancedb-v6-qwen',
+  ramDbPath,
   storageMode: 'auto',
   inboxPath: paths.inboxDir,
 };
@@ -62,7 +69,7 @@ function deriveSessionFileFromStaticRule(args: { sessionId?: string; sessionKey?
   if (!args.sessionId || !agentId) return null;
   if (!/^[A-Za-z0-9._-]+$/.test(agentId) || agentId.includes('..')) return null;
   if (!/^[A-Za-z0-9._-]+$/.test(args.sessionId) || args.sessionId.includes('..')) return null;
-  const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(process.env.HOME ?? '/root', '.openclaw');
+  const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(homeDir, '.openclaw');
   const sessionsDir = path.resolve(stateDir, 'agents', agentId, 'sessions');
   const sessionFile = path.resolve(sessionsDir, `${args.sessionId}.jsonl`);
   const sessionsPrefix = sessionsDir.endsWith(path.sep) ? sessionsDir : `${sessionsDir}${path.sep}`;
@@ -199,10 +206,10 @@ const memoryRiver = {
         }
       },
     }, { name: 'skill_load' });
-    registerTool({ name:'gwm_on', label:'GWM On', description:'啟動全域工作記憶追蹤。當用戶要求你記住任務目標時使用。', parameters:Type.Object({taskName:Type.String({description:'任務名稱（簡短）'}),taskDescription:Type.String({description:'任務詳細描述'}),keywords:Type.Optional(Type.Array(Type.String(),{description:'任務關鍵字（可選，自動從描述提取）'}))}), execute(_id:any,p:any){return engine.executeGwmOn(p);} },{name:'gwm_on'});
-    registerTool({ name:'gwm_off', label:'GWM Off', description:'關閉全域工作記憶追蹤。任務完成或用戶要求時使用。', parameters:Type.Object({}), execute(){return engine.executeGwmOff();} },{name:'gwm_off'});
-    registerTool({ name:'gwm_status', label:'GWM Status', description:'查看當前全域工作記憶狀態（任務名稱、漂移輪數等）。', parameters:Type.Object({}), execute(){return engine.executeGwmStatus();} },{name:'gwm_status'});
-    registerTool({ name:'gwm_update', label:'GWM Update', description:'更新全域工作記憶的任務描述或關鍵字。', parameters:Type.Object({taskName:Type.Optional(Type.String()),taskDescription:Type.Optional(Type.String()),keywords:Type.Optional(Type.Array(Type.String()))}), execute(_id:any,p:any){return engine.executeGwmUpdate(p);} },{name:'gwm_update'});
+    registerTool({ name:'gwm_on', label:'GWM On', description:'啟動全域工作記憶追蹤。當用戶要求你記住任務目標時使用。', parameters:Type.Object({taskName:Type.String({description:'任務名稱（簡短）'}),taskDescription:Type.String({description:'任務詳細描述'}),keywords:Type.Optional(Type.Array(Type.String(),{description:'任務關鍵字（可選，自動從描述提取）'}))}), execute(_id:any,p:any){return engine.executeGwmOn(p, engine.getCurrentSessionKey());} },{name:'gwm_on'});
+    registerTool({ name:'gwm_off', label:'GWM Off', description:'關閉全域工作記憶追蹤。任務完成或用戶要求時使用。', parameters:Type.Object({}), execute(){return engine.executeGwmOff(engine.getCurrentSessionKey());} },{name:'gwm_off'});
+    registerTool({ name:'gwm_status', label:'GWM Status', description:'查看當前全域工作記憶狀態（任務名稱、漂移輪數等）。', parameters:Type.Object({}), execute(){return engine.executeGwmStatus(engine.getCurrentSessionKey());} },{name:'gwm_status'});
+    registerTool({ name:'gwm_update', label:'GWM Update', description:'更新全域工作記憶的任務描述或關鍵字。', parameters:Type.Object({taskName:Type.Optional(Type.String()),taskDescription:Type.Optional(Type.String()),keywords:Type.Optional(Type.Array(Type.String()))}), execute(_id:any,p:any){return engine.executeGwmUpdate(p, engine.getCurrentSessionKey());} },{name:'gwm_update'});
     // ── 註冊工具：memory_rehydrate ────────────────────────────────────────
     registerTool({
       name: 'memory_rehydrate',

@@ -10,7 +10,6 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { ContextMessage, type ConcentratorFailureReason, type ConcentratorProvider } from '../types.js';
 import { CapsuleBridge } from '../pipeline/capsule-bridge.js';
@@ -19,6 +18,7 @@ import type { RawTranscriptEntry, TranscriptArchive } from '../transcript/transc
 import type { SessionIdentity } from '../util/session-identity.js';
 import type { MemoryStore } from '../store/store-v4.js';
 import type { LlmClient } from '../ports.js';
+import { isCompactionProbeEnabled, writeCompactionProbe } from '../probe/compaction-probe.js';
 
 /**
  * concentrate() 可選 context；目前用來把 sessionIdentity 傳到 writeSessionSummary，
@@ -27,6 +27,7 @@ import type { LlmClient } from '../ports.js';
 export interface ConcentrateContext {
   sessionIdentity?: SessionIdentity;
   exhaustive?: boolean;
+  evalId?: number | null;
 }
 
 export interface SessionSummary {
@@ -82,7 +83,7 @@ export function passesConcentratorNoteImportanceFilter(item: {
     && item.importance >= getConcentratorNoteImportanceThreshold(item.category);
 }
 
-type SourceEntryIdsMatchReason =
+export type SourceEntryIdsMatchReason =
   | 'archive_lag'
   | 'count_mismatch'
   | 'order_mismatch'
@@ -96,13 +97,17 @@ interface ComparableTranscriptPair {
   mergedFromEntryIds?: number[];
 }
 
-interface SourceEntryIdsProbeResult {
+export interface SourceEntryIdsMatchResult {
   summarizePairCount: number;
   candidateCount: number;
   matched: boolean;
   matchedEntryIds: number[];
   sourceEntryIds: number[];
   reason?: SourceEntryIdsMatchReason;
+}
+
+interface SourceEntryIdsProbeResult extends Omit<SourceEntryIdsMatchResult, 'reason'> {
+  reason?: SourceEntryIdsMatchReason | 'no_session_identity';
 }
 
 interface BoundaryHeuristicResult {
@@ -489,26 +494,13 @@ function buildSourceEntryIds(candidateEntries: ComparableTranscriptPair[]): numb
   return ids;
 }
 
-function probeSourceEntryIdMatch(
-  transcriptArchive: TranscriptArchive,
+export function matchSourceEntryIds(
   messagesToSummarize: ContextMessage[],
-  sessionIdentity: SessionIdentity | undefined,
-  firstTimestamp: number,
-  lastTimestamp: number,
-): SourceEntryIdsProbeResult | null {
-  if (!sessionIdentity) return null;
-
+  rawEntries: RawTranscriptEntry[],
+): SourceEntryIdsMatchResult {
   const summarizePairs = buildComparableTranscriptPairs(messagesToSummarize);
-  const rawCandidateEntries = buildComparableTranscriptCandidates(
-    transcriptArchive.getRawTranscript(sessionIdentity, firstTimestamp)
-      .filter((entry) => entry.timestamp <= lastTimestamp)
-  );
+  const rawCandidateEntries = buildComparableTranscriptCandidates(rawEntries);
   const boundaryHeuristic = applyBoundaryHeuristicForProbe(rawCandidateEntries, summarizePairs.length);
-  if (boundaryHeuristic.triggered) {
-    console.log(
-      `[P0-1 probe] boundary heuristic: drop last candidate (entryId=${boundaryHeuristic.droppedCandidate?.entryId ?? 'unknown'}, ts=${boundaryHeuristic.droppedCandidate?.timestamp ?? 'unknown'}, summarizePairs=${summarizePairs.length}, candidateCount=${boundaryHeuristic.originalCandidateCount})`
-    );
-  }
   const candidateEntries = boundaryHeuristic.candidateEntries;
 
   if (candidateEntries.length < summarizePairs.length) {
@@ -556,14 +548,6 @@ function probeSourceEntryIdMatch(
     && summarizeKeys.every((key, index) => key === candidateKeys[index]);
   const reason: SourceEntryIdsMatchReason = sameSet ? 'order_mismatch' : 'text_mismatch';
 
-  if (reason === 'text_mismatch') {
-    const mismatchDetail = findProbeTextMismatchDetail(summarizePairs, candidateEntries);
-    if (mismatchDetail) {
-      logProbeTextMismatchDetail(mismatchDetail);
-    }
-    logProbeAlignmentDump(summarizePairs, candidateEntries);
-  }
-
   return {
     summarizePairCount: summarizePairs.length,
     candidateCount: candidateEntries.length,
@@ -572,6 +556,40 @@ function probeSourceEntryIdMatch(
     sourceEntryIds: [],
     reason,
   };
+}
+
+function probeSourceEntryIdMatch(
+  transcriptArchive: TranscriptArchive,
+  messagesToSummarize: ContextMessage[],
+  sessionIdentity: SessionIdentity | undefined,
+  firstTimestamp: number,
+  lastTimestamp: number,
+): SourceEntryIdsProbeResult {
+  if (!sessionIdentity) {
+    return {
+      summarizePairCount: buildComparableTranscriptPairs(messagesToSummarize).length,
+      candidateCount: 0,
+      matched: false,
+      matchedEntryIds: [],
+      sourceEntryIds: [],
+      reason: 'no_session_identity',
+    };
+  }
+
+  const rawEntries = transcriptArchive.getRawTranscript(sessionIdentity, firstTimestamp)
+    .filter((entry) => entry.timestamp <= lastTimestamp);
+  const result = matchSourceEntryIds(messagesToSummarize, rawEntries);
+  if (result.reason === 'text_mismatch') {
+    const summarizePairs = buildComparableTranscriptPairs(messagesToSummarize);
+    const candidateEntries = applyBoundaryHeuristicForProbe(
+      buildComparableTranscriptCandidates(rawEntries),
+      summarizePairs.length,
+    ).candidateEntries;
+    const mismatchDetail = findProbeTextMismatchDetail(summarizePairs, candidateEntries);
+    if (mismatchDetail) logProbeTextMismatchDetail(mismatchDetail);
+    logProbeAlignmentDump(summarizePairs, candidateEntries);
+  }
+  return result;
 }
 
 const FALLBACK_INTERNAL_PATTERNS = [
@@ -1364,10 +1382,71 @@ function estimateTotalTokenBreakdown(messages: ContextMessage[]): { realTokens: 
   );
 }
 
-function estimatePromptTokens(text: string): number {
+// Ceiling sized above the largest compaction input in use today (otter compacts near 136k real tokens, and the CJK estimate runs up to ~2x real),
+// so current single-call distillation is unchanged; only runaway inputs get split into segments.
+export const MAX_DISTILLATION_INPUT_TOKENS = 512_000;
+
+export function estimatePromptTokens(text: string): number {
   const cjkChars = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g) || []).length;
   const nonCjkChars = text.length - cjkChars;
   return Math.ceil((cjkChars * 1.5 + nonCjkChars * 0.25) * (4 / 3));
+}
+
+function takeTextPrefixWithinTokenBudget(text: string, tokenBudget: number): [string, string] {
+  let low = 1;
+  let high = text.length;
+  let best = 0;
+
+  while (low <= high) {
+    const rawMiddle = Math.floor((low + high) / 2);
+    let middle = rawMiddle;
+    if (
+      middle > 0
+      && middle < text.length
+      && text.charCodeAt(middle) >= 0xdc00
+      && text.charCodeAt(middle) <= 0xdfff
+      && text.charCodeAt(middle - 1) >= 0xd800
+      && text.charCodeAt(middle - 1) <= 0xdbff
+    ) {
+      middle--;
+    }
+
+    if (middle > 0 && estimatePromptTokens(text.slice(0, middle)) <= tokenBudget) {
+      best = middle;
+      low = rawMiddle + 1;
+    } else {
+      high = rawMiddle - 1;
+    }
+  }
+
+  if (best === 0) throw new Error('distillation input budget cannot fit one character');
+  return [text.slice(0, best), text.slice(best)];
+}
+
+function splitTextWithinTokenBudget(text: string, tokenBudget: number): string[] {
+  if (!text) return [''];
+  const chunks: string[] = [];
+  let current = '';
+
+  for (let part of text.split(/(?<=\n)/).filter(Boolean)) {
+    if (estimatePromptTokens(part) > tokenBudget) {
+      if (current) chunks.push(current);
+      current = '';
+      while (part) {
+        const [prefix, remainder] = takeTextPrefixWithinTokenBudget(part, tokenBudget);
+        chunks.push(prefix);
+        part = remainder;
+      }
+    } else if (current && estimatePromptTokens(current + part) > tokenBudget) {
+      chunks.push(current);
+      current = part;
+    } else {
+      current += part;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks.length > 0 ? chunks : [''];
 }
 
 function truncatePromptToTokenBudget(prompt: string, maxInputTokens: number): string {
@@ -1440,13 +1519,27 @@ type ExecFileInvoker = (
   callback: ExecFileCallback,
 ) => Pick<ChildProcess, 'kill' | 'stdin'> | undefined;
 
-export function buildCodexExecArgs(prompt: string, config: CodexCliConfig): string[] {
+class CodexCliExecutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CodexCliExecutionError';
+  }
+}
+
+const CODEX_PLAIN_TEXT_PURPOSES = new Set([
+  'conflict-detection',
+  'skill-name-extraction',
+]);
+
+export function buildCodexExecArgs(_prompt: string, config: CodexCliConfig): string[] {
   return [
     'exec',
     '-C', config.workdir,
+    '--sandbox', 'read-only',
+    '--skip-git-repo-check',
     '-c', `model=${config.model}`,
     '-c', `model_reasoning_effort=${config.reasoningEffort}`,
-    prompt,
+    '-',
   ];
 }
 
@@ -1508,12 +1601,44 @@ export function parseCodexOutput(stdout: string): unknown {
   throw new Error('Codex CLI stdout did not contain parseable JSON');
 }
 
+function mergeDistillationOutputs(outputs: string[]): string {
+  const parsed = outputs.map((output) => {
+    const value = parseCodexOutput(output);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Distillation segment returned a non-object result');
+    }
+    return value as Record<string, any>;
+  });
+  const summaries = parsed
+    .map(result => result.summary)
+    .filter((summary): summary is Record<string, unknown> => Boolean(summary && typeof summary === 'object' && !Array.isArray(summary)));
+  const summary = summaries.length > 0
+    ? Object.fromEntries([...new Set(summaries.flatMap(value => Object.keys(value)))].map((key) => [
+      key,
+      summaries.map(value => typeof value[key] === 'string' ? value[key].trim() : '').filter(Boolean).join('\n\n'),
+    ]))
+    : undefined;
+  const capsules = parsed
+    .map(result => typeof result.capsule === 'string' ? result.capsule : typeof result.analysis === 'string' ? result.analysis : '')
+    .filter(Boolean);
+  const notes = parsed.flatMap(result => Array.isArray(result.notes) ? result.notes : []);
+  const confidences = parsed.map(result => result.confidence).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+
+  return JSON.stringify({
+    ...(summary ? { summary } : { capsule: capsules.join('\n\n') }),
+    notes,
+    ...(confidences.length > 0 ? { confidence: confidences.reduce((sum, value) => sum + value, 0) / confidences.length } : {}),
+  });
+}
+
 export function runCodexCli(
   prompt: string,
   config: CodexCliConfig,
   execFileImpl: ExecFileInvoker = execFile as unknown as ExecFileInvoker,
+  allowPlainText: boolean = false,
 ): Promise<string> {
   const args = buildCodexExecArgs(prompt, config);
+  fs.mkdirSync(config.workdir, { recursive: true });
   return new Promise((resolve, reject) => {
     let settled = false;
     let timedOut = false;
@@ -1521,7 +1646,7 @@ export function runCodexCli(
     const timer = setTimeout(() => {
       timedOut = true;
       child?.kill('SIGTERM');
-      reject(new Error(`Codex CLI timed out after ${config.timeoutMs}ms`));
+      reject(new CodexCliExecutionError(`Codex CLI timed out after ${config.timeoutMs}ms`));
     }, config.timeoutMs);
 
     const finish = (error: NodeJS.ErrnoException | null, stdout: string | Buffer, stderr: string | Buffer): void => {
@@ -1531,11 +1656,16 @@ export function runCodexCli(
       if (timedOut) return;
       if (error) {
         const detail = String(stderr || error.message || error);
-        reject(new Error(`Codex CLI failed: ${detail}`));
+        reject(new CodexCliExecutionError(`Codex CLI failed: ${detail}`));
+        return;
+      }
+      const output = String(stdout);
+      if (!output.trim()) {
+        reject(new CodexCliExecutionError('Codex CLI returned empty stdout'));
         return;
       }
       try {
-        resolve(JSON.stringify(parseCodexOutput(String(stdout))));
+        resolve(allowPlainText ? output.trim() : JSON.stringify(parseCodexOutput(output)));
       } catch (parseError) {
         reject(parseError);
       }
@@ -1545,9 +1675,17 @@ export function runCodexCli(
       cwd: config.workdir,
       timeout: config.timeoutMs,
     }, finish);
-    // execFile 不吃 stdio 選項,child 的 stdin 會是一個開著的 pipe,
-    // codex CLI 因此停在 "Reading additional input from stdin" 直到 timeout。
-    child?.stdin?.end();
+    const stdin = child?.stdin;
+    if (!stdin) {
+      finish(new Error('Codex CLI stdin is unavailable'), '', '');
+      return;
+    }
+    stdin.on?.('error', (error) => finish(error, '', ''));
+    try {
+      stdin.end(prompt);
+    } catch (error) {
+      finish(error as NodeJS.ErrnoException, '', '');
+    }
   });
 }
 
@@ -1804,22 +1942,25 @@ export interface ConcentratorConfig {
   sessionSummaryDir: string;
   llm?: LlmClient;
   importanceScorer?: (prompt: string) => Promise<string>;
+  codexExecFileImpl?: ExecFileInvoker;
 }
 
 export interface CapsuleOutput {
   messages: ContextMessage[];
   wasConcentrated: boolean;
+  status: 'complete' | 'degraded' | 'failed' | 'skipped';
   summary?: string;
   processedThroughIndex?: number;
 }
 
 export class ConcentratorAdapter implements LlmClient {
-  private config: Required<Omit<ConcentratorConfig, 'statsStore' | 'transcriptArchive' | 'llm' | 'importanceScorer'>>;
+  private config: Required<Omit<ConcentratorConfig, 'statsStore' | 'transcriptArchive' | 'llm' | 'importanceScorer' | 'codexExecFileImpl'>>;
   private capsuleBridge: CapsuleBridge;
   private statsStore?: Pick<MemoryStore, 'recordConcentratorStat'>;
   private transcriptArchive: TranscriptArchive;
   private llm?: LlmClient;
   private importanceScorer?: (prompt: string) => Promise<string>;
+  private codexExecFileImpl: ExecFileInvoker;
   private readonly MAX_CONTEXT_WINDOW = 200000; 
 
   // ── 動態水位線常數 ──────────────────────────────────────
@@ -1839,7 +1980,7 @@ export class ConcentratorAdapter implements LlmClient {
       codexModel: config.codexModel ?? 'gpt-5.6-luna',
       codexReasoningEffort: config.codexReasoningEffort ?? 'low',
       codexReasoningEffortByPurpose: config.codexReasoningEffortByPurpose ?? {},
-      codexWorkdir: config.codexWorkdir || os.homedir(),
+      codexWorkdir: config.codexWorkdir || path.resolve(path.dirname(config.inboxPath), 'codex-workdir'),
       codexTimeoutMs: config.codexTimeoutMs ?? 120000,
       maxTokens: config.maxTokens ?? 32768,
       deepseekApiKey: config.deepseekApiKey || '',
@@ -1851,6 +1992,7 @@ export class ConcentratorAdapter implements LlmClient {
     this.transcriptArchive = config.transcriptArchive;
     this.llm = config.llm;
     this.importanceScorer = config.importanceScorer;
+    this.codexExecFileImpl = config.codexExecFileImpl ?? execFile as unknown as ExecFileInvoker;
     this.capsuleBridge = new CapsuleBridge(this.config.inboxPath);
   }
 
@@ -1986,9 +2128,63 @@ export class ConcentratorAdapter implements LlmClient {
     force: boolean = false,
     context: ConcentrateContext = {},
   ): Promise<CapsuleOutput> {
+    if (!isCompactionProbeEnabled()) {
+      return this.concentrateImpl(rawMessages, dryRun, force, context);
+    }
+    const probeStartedAt = Date.now();
+    const probe = {
+      rawTokens: estimateTotalTokens(rawMessages),
+      currentTokens: null as number | null,
+      mode: null as 'code' | 'default' | null,
+      waterline: null as number | null,
+      dynamicTarget: null as number | null,
+      needsCut: null as boolean | null,
+    };
+    let result: CapsuleOutput | null = null;
+    let error: string | null = null;
+    try {
+      result = await this.concentrateImpl(rawMessages, dryRun, force, context, probe);
+      return result;
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      writeCompactionProbe({
+        kind: 'concentrate_gate',
+        evalId: context.evalId ?? null,
+        sessionKey: context.sessionIdentity?.sessionKey ?? null,
+        force,
+        dryRun,
+        rawTokens: probe.rawTokens,
+        currentTokens: probe.currentTokens,
+        mode: probe.mode,
+        waterline: probe.waterline,
+        dynamicTarget: probe.dynamicTarget,
+        needsCut: probe.needsCut,
+        status: result?.status ?? (error ? 'error' : null),
+        durationMs: Date.now() - probeStartedAt,
+      });
+    }
+  }
+
+  private async concentrateImpl(
+    rawMessages: ContextMessage[],
+    dryRun: boolean = false,
+    force: boolean = false,
+    context: ConcentrateContext = {},
+    probe?: {
+      rawTokens: number;
+      currentTokens: number | null;
+      mode: 'code' | 'default' | null;
+      waterline: number | null;
+      dynamicTarget: number | null;
+      needsCut: boolean | null;
+    },
+  ): Promise<CapsuleOutput> {
     
     const messages = rawMessages.map(msg => truncateGiantStrings(msg));
     const currentTokens = estimateTotalTokens(messages);
+    if (probe) probe.currentTokens = currentTokens;
     
     // 🎯 動態水位線引擎：根據對話模式自動調整觸發門檻
     const { mode, waterline, reason } = this.detectConversationMode(messages);
@@ -1997,14 +2193,20 @@ export class ConcentratorAdapter implements LlmClient {
       : Math.floor(this.MAX_CONTEXT_WINDOW * waterline);
 
     const needsCut = force || (currentTokens >= dynamicTarget);
+    if (probe) {
+      probe.mode = mode;
+      probe.waterline = waterline;
+      probe.dynamicTarget = dynamicTarget;
+      probe.needsCut = needsCut;
+    }
 
     if (!needsCut) {
-      return { messages, wasConcentrated: false, processedThroughIndex: 0 };
+      return { messages, wasConcentrated: false, status: 'skipped', processedThroughIndex: 0 };
     }
 
     if (!this.llm && this.config.provider !== 'codex' && !this.config.apiKey && !this.config.deepseekApiKey) {
       console.warn('[ConcentratorAdapter] Concentration skipped: no LLM API key configured; raw transcripts and recall remain available.');
-      return { messages, wasConcentrated: false, processedThroughIndex: 0 };
+      return { messages, wasConcentrated: false, status: 'skipped', processedThroughIndex: 0 };
     }
 
     let cutEndIndex = 0;
@@ -2034,6 +2236,7 @@ export class ConcentratorAdapter implements LlmClient {
     const messagesToSummarize: ContextMessage[] = [];
     let hasModified = false;
     let concentrationFailed = false;
+    let concentrationStatus: CapsuleOutput['status'] = 'complete';
     let capsuleText = '';   
 
       for (let i = 0; i < messages.length; i++) {
@@ -2074,16 +2277,17 @@ export class ConcentratorAdapter implements LlmClient {
       firstTimestamp,
       lastTimestamp,
     );
-
-    if (sourceEntryIdsProbe) {
-      console.log(
-        `[ConcentratorAdapter][P0-1 probe] summarizeMessages=${messagesToSummarize.length} summarizePairs=${sourceEntryIdsProbe.summarizePairCount} candidateCount=${sourceEntryIdsProbe.candidateCount} matched=${sourceEntryIdsProbe.matched} reason=${sourceEntryIdsProbe.reason ?? 'ok'} matchedEntryIds=${sourceEntryIdsProbe.matchedEntryIds.join(',') || 'none'} sourceEntryIds=${sourceEntryIdsProbe.sourceEntryIds.join(',') || 'none'} firstTimestamp=${firstTimestamp} lastTimestamp=${lastTimestamp} canonicalKey=${context.sessionIdentity?.canonicalKey ?? 'unknown'}`
-      );
-    } else {
-      console.log(
-        `[ConcentratorAdapter][P0-1 probe] summarizeMessages=${messagesToSummarize.length} summarizePairs=0 candidateCount=0 matched=false reason=archive_lag matchedEntryIds=none firstTimestamp=${firstTimestamp} lastTimestamp=${lastTimestamp} canonicalKey=unknown sessionIdentity=missing`
-      );
-    }
+    const sourceEntryIdsStatus = sourceEntryIdsProbe.matched
+      ? { matched: true as const }
+      : {
+          matched: false as const,
+          reason: sourceEntryIdsProbe.reason ?? 'archive_lag',
+          summarizePairCount: sourceEntryIdsProbe.summarizePairCount,
+          candidateCount: sourceEntryIdsProbe.candidateCount,
+        };
+    console.log(
+      `[ConcentratorAdapter][P0-1 probe] summarizeMessages=${messagesToSummarize.length} summarizePairs=${sourceEntryIdsProbe.summarizePairCount} candidateCount=${sourceEntryIdsProbe.candidateCount} matched=${sourceEntryIdsProbe.matched} reason=${sourceEntryIdsProbe.reason ?? 'ok'} matchedEntryIds=${sourceEntryIdsProbe.matchedEntryIds.join(',') || 'none'} sourceEntryIds=${sourceEntryIdsProbe.sourceEntryIds.join(',') || 'none'} firstTimestamp=${firstTimestamp} lastTimestamp=${lastTimestamp} canonicalKey=${context.sessionIdentity?.canonicalKey ?? 'unknown'}`
+    );
 
     if (messagesToSummarize.length > 0) {
       try {
@@ -2106,25 +2310,43 @@ export class ConcentratorAdapter implements LlmClient {
           .filter((line): line is string => !!line && line.trim().length > 0)
           .join('\n\n');
 
-        const prompt = mode === 'code'
-          ? buildDualTrackPrompt(conversationLog, this.config.capsuleLanguage)
-          : buildGeneralConversationPrompt(conversationLog, this.config.capsuleLanguage);
-        const simplePrompt = buildSimplePrompt(conversationLog, this.config.capsuleLanguage);
+        const buildPrompt = mode === 'code'
+          ? (log: string) => buildDualTrackPrompt(log, this.config.capsuleLanguage)
+          : (log: string) => buildGeneralConversationPrompt(log, this.config.capsuleLanguage);
         if (!conversationLog.trim()) {
           console.warn('[ConcentratorAdapter] conversationLog is empty; compaction input may lack actual conversation content');
         }
         let generatedJSON = '';
 
         try {
-          // 傳入雙軌 prompt 與降級 simplePrompt
-          generatedJSON = await this.callWithFallback(prompt, 'concentrate', simplePrompt, {
-            sessionIdentity: context.sessionIdentity,
-            inputTokens: currentTokens,
-          });
+          const promptOverheadTokens = estimatePromptTokens(buildPrompt(''));
+          const conversationBudget = MAX_DISTILLATION_INPUT_TOKENS - promptOverheadTokens;
+          if (conversationBudget <= 0) throw new Error('distillation prompt instructions exceed the input budget');
+          const conversationSegments = splitTextWithinTokenBudget(conversationLog, conversationBudget);
+          const segmentOutputs: string[] = [];
+          for (const segment of conversationSegments) {
+            const prompt = buildPrompt(segment);
+            if (estimatePromptTokens(prompt) > MAX_DISTILLATION_INPUT_TOKENS) {
+              throw new Error('distillation segment exceeded the input budget');
+            }
+            segmentOutputs.push(await this.callWithFallback(
+              prompt,
+              'concentrate',
+              buildSimplePrompt(segment, this.config.capsuleLanguage),
+              {
+                sessionIdentity: context.sessionIdentity,
+                inputTokens: estimatePromptTokens(prompt),
+              },
+            ));
+          }
+          generatedJSON = segmentOutputs.length === 1
+            ? segmentOutputs[0]
+            : mergeDistillationOutputs(segmentOutputs);
         } catch (err) {
           console.error("[ConcentratorAdapter] Compaction failed:", err);
           const fallbackCapsule = this.buildFallbackCapsule(filteredForLLM);
           console.warn('[ConcentratorAdapter] Enabling local deterministic fallback capsule');
+          concentrationStatus = 'degraded';
           generatedJSON = JSON.stringify({
             capsule: fallbackCapsule,
             notes: [],
@@ -2216,7 +2438,7 @@ export class ConcentratorAdapter implements LlmClient {
         if (!capsuleText.trim() && notes.length === 0) {
           throw new Error('[ConcentratorAdapter] Concentration response contained no capsule or notes');
         }
-        const sourceEntryIds = sourceEntryIdsProbe?.matched ? sourceEntryIdsProbe.sourceEntryIds : [];
+        const sourceEntryIds = sourceEntryIdsProbe.matched ? sourceEntryIdsProbe.sourceEntryIds : [];
         const sourceEntryRange = sourceEntryIds.length > 0
           ? {
               firstEntryId: sourceEntryIds[0],
@@ -2237,6 +2459,7 @@ export class ConcentratorAdapter implements LlmClient {
               compressionRatio,
               firstTimestamp,
               lastTimestamp,
+              sourceEntryIdsStatus,
               ...(sourceEntryIds.length > 0 ? { sourceEntryIds } : {}),
               ...(sourceEntryRange ? { sourceEntryRange } : {}),
             }
@@ -2274,6 +2497,7 @@ export class ConcentratorAdapter implements LlmClient {
                 confidence,
                 firstTimestamp,
                 lastTimestamp,
+                sourceEntryIdsStatus,
                 ...(item.importanceFallback === true ? { importanceFallback: true } : {}),
                 ...(sourceEntryIds.length > 0 ? { sourceEntryIds } : {}),
                 ...(sourceEntryRange ? { sourceEntryRange } : {}),
@@ -2313,7 +2537,7 @@ export class ConcentratorAdapter implements LlmClient {
     }
 
     if (concentrationFailed) {
-      return { messages, wasConcentrated: false, processedThroughIndex: 0 };
+      return { messages, wasConcentrated: false, status: 'failed', processedThroughIndex: 0 };
     }
 
     let finalizedMessages = finalizeMessages(newMessages);
@@ -2332,7 +2556,7 @@ export class ConcentratorAdapter implements LlmClient {
       console.log("[ConcentratorAdapter] Summary injected at the top of context");
     }
 
-    return { messages: finalizedMessages, wasConcentrated: hasModified || needsCut, summary: capsuleText, processedThroughIndex: cutEndIndex };
+    return { messages: finalizedMessages, wasConcentrated: hasModified || needsCut, status: concentrationStatus, summary: capsuleText, processedThroughIndex: cutEndIndex };
   }
 
   estimateTokens(messages: ContextMessage[]): number {
@@ -2435,10 +2659,14 @@ export class ConcentratorAdapter implements LlmClient {
       } catch (err) {
         console.warn(`[${fnName}] ${provider} failed; trying next provider:`, err);
         if (provider === 'codex') {
-          codexConsecutiveFailureCount += 1;
-          if (codexConsecutiveFailureCount >= CODEX_FAILURE_BREAKER_THRESHOLD) {
-            codexCooldownUntil = Date.now() + CODEX_FAILURE_COOLDOWN_MS;
-            console.warn(`[${fnName}] codex circuit breaker opened for ${CODEX_FAILURE_COOLDOWN_MS / 1000}s after ${codexConsecutiveFailureCount} consecutive failures`);
+          if (err instanceof CodexCliExecutionError) {
+            codexConsecutiveFailureCount += 1;
+            if (codexConsecutiveFailureCount >= CODEX_FAILURE_BREAKER_THRESHOLD) {
+              codexCooldownUntil = Date.now() + CODEX_FAILURE_COOLDOWN_MS;
+              console.warn(`[${fnName}] codex circuit breaker opened for ${CODEX_FAILURE_COOLDOWN_MS / 1000}s after ${codexConsecutiveFailureCount} consecutive failures`);
+            }
+          } else {
+            codexConsecutiveFailureCount = 0;
           }
         } else if (provider === 'gemini') {
           if (isGemini503Error(err)) {
@@ -2478,7 +2706,12 @@ export class ConcentratorAdapter implements LlmClient {
       return callGeminiAPI(this.config.apiKey, this.config.model, prompt, maxTokens);
     }
     if (provider === 'codex') {
-      return runCodexCli(prompt, this.buildCodexOptions(purpose));
+      return runCodexCli(
+        prompt,
+        this.buildCodexOptions(purpose),
+        this.codexExecFileImpl,
+        CODEX_PLAIN_TEXT_PURPOSES.has(purpose),
+      );
     }
     if (provider === 'deepseek') {
       return callDeepSeekAPI(this.config.deepseekApiKey, this.config.deepseekModel, prompt, maxTokens);

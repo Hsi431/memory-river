@@ -9,7 +9,9 @@ This private workspace package measures memory-system quality across two phases:
   four retriever paths and (optionally) answer accuracy via an LLM judge. Needs a
   local Ollama embedder, and a DeepSeek API key for the judge.
 - **B2b (not CI):** LoCoMo long-conversation answer accuracy through the shipped
-  Gemini-to-DeepSeek concentration pipeline, real recall, and a DeepSeek judge.
+  Gemini-to-DeepSeek concentration pipeline, real recall, and an xAI Grok judge
+  (`grok-4-1-fast-non-reasoning`). DeepSeek remains the answering agent; the
+  DeepSeek judge description below applies to B2 retrieval only.
 
 ## B1 Synthetic Data Assumptions
 
@@ -97,20 +99,19 @@ The dataset is gitignored. Fetch it idempotently with:
 node packages/benchmark/scripts/fetch-external.mjs
 ```
 
-The default run processes one conversation. `--max-questions` provides a
-smaller validation sample; omit it to grade every QA item in the selected
-conversation. Category 5 is adversarial/unanswerable and is correct only when
+By default, the run processes every conversation in the selected dataset and
+all QA items. Use `--limit N` to restrict the conversation count and
+`--max-questions N` to cap the questions per conversation. Category 5 is adversarial/unanswerable and is correct only when
 the generated answer abstains. Reports include overall answer accuracy,
 per-category accuracy, and a best-effort approximate evidence-hit rate.
 
 Requirements:
 
 - Local Ollama with `hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF`.
-- Gemini and DeepSeek credentials via `GEMINI_API_KEY` /
-  `DEEPSEEK_API_KEY`, or OpenClaw provider `apiKey` entries for `google` and
-  `deepseek`.
-- Expect roughly $0.30-$0.50 for the default one-conversation run. A full
-  10-conversation sweep is intentionally opt-in and may take 1-2 hours.
+- Gemini and DeepSeek credentials for concentration and answering, plus an xAI
+  API key for the Grok judge (or the corresponding OpenClaw provider entries).
+- The full default dataset run may take 1-2 hours; `--limit 1` selects one
+  conversation for a shorter run.
 
 ## Usage
 
@@ -125,7 +126,7 @@ node packages/benchmark/dist/cli.js evidence --out report.json
 MR_BENCH_NO_JUDGE=1 node packages/benchmark/dist/cli.js retrieval     # retrieval-level only
 DEEPSEEK_API_KEY=sk-... node packages/benchmark/dist/cli.js retrieval --out report.json
 
-# B2b LoCoMo (defaults to --limit 1)
+# B2b LoCoMo (defaults to all conversations and questions)
 node packages/benchmark/dist/cli.js locomo --max-questions 5 --out locomo.json
 node packages/benchmark/dist/cli.js locomo --limit 1
 
@@ -133,6 +134,6 @@ node packages/benchmark/dist/cli.js locomo --limit 1
 node packages/benchmark/dist/cli.js all
 ```
 
-> `all` includes `retrieval` and `locomo`. LoCoMo still defaults to one
-> conversation. The unit tests cover only deterministic logic and inline
-> fixtures; they never call Ollama, Gemini, or DeepSeek.
+> `all` includes `retrieval` and `locomo`; LoCoMo defaults to all conversations
+> and questions. The unit tests cover only deterministic logic and inline
+> fixtures; they never call Ollama, Gemini, DeepSeek, or xAI.

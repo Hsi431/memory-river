@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import * as lancedb from '@lancedb/lancedb';
@@ -11,10 +13,15 @@ const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 let dbPath;
 let started;
 let handleDashboardRequest;
+let isAllowedDashboardRequest;
 let startServer;
 
 before(async () => {
-  ({ startDashboardServer: startServer, handleDashboardRequest } = await import(path.join(packageDir, 'dist/serve.js')));
+  ({
+    startDashboardServer: startServer,
+    handleDashboardRequest,
+    isAllowedDashboardRequest,
+  } = await import(path.join(packageDir, 'dist/serve.js')));
   dbPath = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-serve-'));
   const db = await lancedb.connect(dbPath);
   const now = Date.now();
@@ -151,6 +158,26 @@ async function getJson(pathname) {
   return JSON.parse(text);
 }
 
+async function requestDashboard(server, pathname, headers) {
+  const request = Readable.from([]);
+  request.method = 'GET';
+  request.url = pathname;
+  request.headers = headers;
+  return await new Promise(resolve => {
+    server.emit('request', request, {
+      status: 0,
+      headers: {},
+      writeHead(status, responseHeaders) {
+        this.status = status;
+        this.headers = responseHeaders;
+      },
+      end(body) {
+        resolve({ status: this.status, headers: this.headers, body: String(body ?? '') });
+      },
+    });
+  });
+}
+
 test('serves the single-page dashboard', async () => {
   let html;
   if (started) {
@@ -168,6 +195,53 @@ test('serves the single-page dashboard', async () => {
   for (const tab of ['Tables', 'Effectiveness', 'Night', 'Memories', 'Graph', 'Slots']) {
     assert.match(html, new RegExp(tab));
   }
+});
+
+test('dashboard rejects cross-site Host and Origin and hashes its inline UI blocks', async () => {
+  const { createDashboardServer } = await import(path.join(packageDir, 'dist/serve.js'));
+  const server = createDashboardServer(dbPath);
+  const externalHost = await requestDashboard(server, '/', { host: 'dashboard.attacker.example' });
+  assert.equal(externalHost.status, 403);
+
+  const externalOrigin = await requestDashboard(server, '/', {
+    host: '127.0.0.1:7777',
+    origin: 'https://attacker.example',
+  });
+  assert.equal(externalOrigin.status, 403);
+
+  const local = await requestDashboard(server, '/', {
+    host: '[::1]:7777',
+    origin: 'http://localhost:4791',
+  });
+  assert.equal(local.status, 200);
+
+  const html = local.body;
+  const policy = local.headers['content-security-policy'];
+  assert.equal(typeof policy, 'string');
+  const blocks = tag => [...html.matchAll(new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>', 'g'))]
+    .map(match => match[1]);
+  const scripts = blocks('script');
+  const styles = blocks('style');
+  assert.equal(scripts.length, 1);
+  assert.equal(styles.length, 1);
+  const hash = content => `'sha256-${createHash('sha256').update(content).digest('base64')}'`;
+  const directives = new Map(policy.split(';').map(part => {
+    const [name, ...values] = part.trim().split(/\s+/);
+    return [name, values.join(' ')];
+  }));
+  assert.equal(directives.get('default-src'), "'none'");
+  assert.equal(directives.get('script-src'), hash(scripts[0]));
+  assert.equal(directives.get('style-src'), hash(styles[0]));
+  assert.equal(directives.get('connect-src'), "'self'");
+});
+
+test('dashboard header policy can be called without opening a socket', () => {
+  assert.equal(isAllowedDashboardRequest({ host: '127.0.0.1:7777' }), true);
+  assert.equal(isAllowedDashboardRequest({ host: 'localhost' }), true);
+  assert.equal(isAllowedDashboardRequest({ host: '[::1]:7777' }), true);
+  assert.equal(isAllowedDashboardRequest({ host: 'dashboard.attacker.example' }), false);
+  assert.equal(isAllowedDashboardRequest({ host: 'localhost', origin: 'https://attacker.example' }), false);
+  assert.equal(isAllowedDashboardRequest({ host: 'localhost', origin: 'http://127.0.0.1:4791' }), true);
 });
 
 test('tables endpoint returns row counts', async () => {
@@ -222,6 +296,46 @@ test('slots endpoint only returns memories with a non-empty slot key', async () 
   const data = await getJson('/api/slots?limit=50&offset=0');
   assert.equal(data.total, 1);
   assert.equal(data.items[0].slotKey, 'profile.name');
+});
+
+test('memories, graph, and slots endpoints return stable pages', async () => {
+  const stableDbPath = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-order-'));
+  try {
+    const db = await lancedb.connect(stableDbPath);
+    await db.createTable('memories', [
+      {
+        id: 'memory-z', text: 'Z', category: 'fact', importance: 1, confidence: 1,
+        status: 'active', slotKey: 'z', slotValue: 'Z', sessionId: '', parentId: '',
+        createdAt: 2, updatedAt: 2, metadata: '{}',
+      },
+      {
+        id: 'memory-a', text: 'A', category: 'fact', importance: 1, confidence: 1,
+        status: 'active', slotKey: 'a', slotValue: 'A', sessionId: '', parentId: '',
+        createdAt: 1, updatedAt: 1, metadata: '{}',
+      },
+    ]);
+    await db.createTable('graph_triples', [
+      { subject: 'Z', relation: 'likes', object: 'Z', sourceMemoryId: 'memory-z', createdAt: 2 },
+      { subject: 'A', relation: 'likes', object: 'A', sourceMemoryId: 'memory-a', createdAt: 1 },
+    ]);
+
+    const firstMemoryPage = await handleDashboardRequest(stableDbPath, 'GET', '/api/memories?limit=1&offset=0');
+    const secondMemoryPage = await handleDashboardRequest(stableDbPath, 'GET', '/api/memories?limit=1&offset=1');
+    assert.deepEqual(firstMemoryPage.body.items.map(item => item.id), ['memory-a']);
+    assert.deepEqual(secondMemoryPage.body.items.map(item => item.id), ['memory-z']);
+
+    const firstGraphPage = await handleDashboardRequest(stableDbPath, 'GET', '/api/graph?limit=1&offset=0');
+    const secondGraphPage = await handleDashboardRequest(stableDbPath, 'GET', '/api/graph?limit=1&offset=1');
+    assert.deepEqual(firstGraphPage.body.items.map(item => item.subject), ['A']);
+    assert.deepEqual(secondGraphPage.body.items.map(item => item.subject), ['Z']);
+
+    const firstSlotPage = await handleDashboardRequest(stableDbPath, 'GET', '/api/slots?limit=1&offset=0');
+    const secondSlotPage = await handleDashboardRequest(stableDbPath, 'GET', '/api/slots?limit=1&offset=1');
+    assert.deepEqual(firstSlotPage.body.items.map(item => item.id), ['memory-a']);
+    assert.deepEqual(secondSlotPage.body.items.map(item => item.id), ['memory-z']);
+  } finally {
+    await rm(stableDbPath, { recursive: true, force: true });
+  }
 });
 
 test('API errors are JSON and do not crash the server', async () => {

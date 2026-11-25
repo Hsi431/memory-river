@@ -10,6 +10,7 @@ import {
   isAbstention,
   sampleLocomo,
 } from '../dist/dimensions/locomo.js';
+import * as conversationRunner from '../dist/dimensions/conversation-runner.js';
 import { loadLocomo, parseLocomo } from '../dist/harness/locomo.js';
 
 const fixture = [{
@@ -75,6 +76,22 @@ test('category-5 grading recognizes abstentions without accepting guesses', () =
   assert.equal(isAbstention('That is not mentioned in the conversation.'), true);
   assert.equal(isAbstention('The available context cannot determine the answer.'), true);
   assert.equal(isAbstention('Alex prefers dogs.'), false);
+});
+
+test('LoCoMo score reports judge parse failures separately and excludes them from accuracy', async () => {
+  const failedGrade = await gradeLocomoAnswer(
+    { generate: async () => 'not a YES/NO verdict' },
+    { question: 'What happened?', answer: 'A walk', category: '1' },
+    'They walked.',
+  );
+  const correctGrade = { correct: true, parseFailure: false };
+  const score = conversationRunner.answerScoreMetrics?.([correctGrade, failedGrade]) ?? {};
+
+  assert.equal(failedGrade.parseFailure, true);
+  assert.equal(score.answer_accuracy, 1);
+  assert.equal(score.answer_accuracy_including_parse_failures, 0.5);
+  assert.equal(score.parse_failures, 1);
+  assert.equal(score.parse_failure_rate, 0.5);
 });
 
 test('category-5 product grader accepts abstention/correction and rejects bait/unrelated answers', async () => {

@@ -224,13 +224,37 @@ function loadCat1GoldItems(): Cat1GoldItemsFixture {
   return cachedGoldItems;
 }
 
+function cat1GoldAtomsForQuestion(
+  fixture: Cat1GoldItemsFixture,
+  sampleId: string,
+  questionIndex: number,
+): string[] {
+  if (fixture.sampleId !== sampleId) {
+    throw new Error(
+      `LoCoMo gold-items fixture for ${fixture.sampleId} does not match conversation ${sampleId}`,
+    );
+  }
+  return fixture.items[String(questionIndex)] ?? [];
+}
+
+export async function writeDiagnosticDumpAfterScoring<TAnswer, TGrade>(
+  answer: Promise<TAnswer>,
+  grade: Promise<TGrade>,
+  record: (answer: TAnswer, grade: TGrade) => Record<string, unknown>,
+  appendLine: (line: string) => void,
+): Promise<void> {
+  const answerResult = await answer;
+  const score = await grade;
+  appendLine(`${JSON.stringify(record(answerResult, score))}\n`);
+}
+
 export function measureAtomRecallInContext(
   contextText: string,
   sampleId: string,
   questionIndex: number,
 ): { hits: string[]; measured: number; total: number; recall: number } {
   const fixture = loadCat1GoldItems();
-  const atoms = fixture.sampleId === sampleId ? fixture.items[String(questionIndex)] ?? [] : [];
+  const atoms = cat1GoldAtomsForQuestion(fixture, sampleId, questionIndex);
   const context = normalizeAtomText(contextText);
   const hits: string[] = [];
   let measured = 0;
@@ -583,7 +607,7 @@ export async function runLocomoDeliveredContext(
       const extraAutoRecallContext = fanoutEnabled
         ? [...deliveredContext.textChunks.autoRecall]
         : undefined;
-      const result = await runOtter({
+      const resultPromise = runOtter({
         llm: {
           apiKey: deepseekApiKey()!,
           model: answerModel,
@@ -596,13 +620,15 @@ export async function runLocomoDeliveredContext(
         deliveredContext,
         extraAutoRecallContext,
       });
-      const grade = await gradeLocomoAnswer(judge, {
+      const gradePromise = resultPromise.then(result => gradeLocomoAnswer(judge, {
         question: qa.question,
         answer: qa.answer,
         evidence: qa.evidence,
         category: String(qa.category),
         sourceIndex: qa.sourceIndex,
-      }, result.answer);
+      }, result.answer));
+      const result = await resultPromise;
+      const grade = await gradePromise;
 
       const goldEntryIds = goldEntryIdsForQuestion(conversation, snapshotPath, qa.evidence);
       if (goldEntryIds.length === 0) {
@@ -650,9 +676,7 @@ export async function runLocomoDeliveredContext(
       // no gold atoms). normalizeAtomText lowercases and collapses whitespace identically to
       // how measureAtomRecallInContext normalises before calling boundedIncludes.
       const fixture = loadCat1GoldItems();
-      const allAtoms = fixture.sampleId === conversation.sampleId
-        ? fixture.items[String(questionIndex)] ?? []
-        : [];
+      const allAtoms = cat1GoldAtomsForQuestion(fixture, conversation.sampleId, questionIndex);
       const contextNormalized = normalizeAtomText(allText);
       const answerNormalized = normalizeAtomText(result.answer);
       const atomClassification = classifyGoldAtoms({
@@ -661,23 +685,29 @@ export async function runLocomoDeliveredContext(
         answerNormalized,
       });
 
-      if (process.env.MR_DC_DUMP) {
-        fs.appendFileSync(process.env.MR_DC_DUMP, JSON.stringify({
-          questionIndex,
-          question: qa.question,
-          goldAnswer: qa.answer,
-          modelAnswer: result.answer,
-          correct: grade.correct,
-          bucket: bucketFor(deliveredCoverage),
-          coverage: deliveredCoverage,
-          fanoutSubQueries,
-          deliveredCharCounts,
-          goldAtomRecallContextAll: atomAll.recall,
-          goldAtomRecallContextRecallOnly: atomRecallOnly.recall,
-          goldAtomRecallContextRehydrateOnly: atomRehydrateOnly.recall,
-          goldAtomsMeasured: atomRecallOnly.measured,
-          goldAtomsTotal: atomRecallOnly.total,
-        }) + '\n');
+      const dumpPath = process.env.MR_DC_DUMP;
+      if (dumpPath) {
+        await writeDiagnosticDumpAfterScoring(
+          resultPromise,
+          gradePromise,
+          (scoredResult, scoredGrade) => ({
+            questionIndex,
+            question: qa.question,
+            goldAnswer: qa.answer,
+            modelAnswer: scoredResult.answer,
+            correct: scoredGrade.correct,
+            bucket: bucketFor(deliveredCoverage),
+            coverage: deliveredCoverage,
+            fanoutSubQueries,
+            deliveredCharCounts,
+            goldAtomRecallContextAll: atomAll.recall,
+            goldAtomRecallContextRecallOnly: atomRecallOnly.recall,
+            goldAtomRecallContextRehydrateOnly: atomRehydrateOnly.recall,
+            goldAtomsMeasured: atomRecallOnly.measured,
+            goldAtomsTotal: atomRecallOnly.total,
+          }),
+          line => fs.appendFileSync(dumpPath, line),
+        );
       }
       questions.push({
         sampleId: conversation.sampleId,

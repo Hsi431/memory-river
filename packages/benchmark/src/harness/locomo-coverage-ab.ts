@@ -21,13 +21,13 @@
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { CrossEncoderReranker, MMARCO_MMINILM_RERANKER_MODEL } from './cross-encoder-reranker.js';
+import { CrossEncoderReranker, MMARCO_MMINILM_RERANKER_MODEL, scoreRerankPool } from './cross-encoder-reranker.js';
 import { mmrOrder, COVERAGE_MMR_LAMBDA } from './locomo-reranker-probe.js';
 import { loadLocomo, type LocomoQa } from './locomo.js';
 import { findSnapshotPath } from './locomo-provenance.js';
 import { createRealMemoryRiver } from './real-river.js';
 import { createRealEmbedder } from './real-embedder.js';
-import { runToolLoop } from './tool-llm.js';
+import { runToolLoop, type ToolCompletion } from './tool-llm.js';
 import { deepseekApiKey, geminiApiKey } from './provider-keys.js';
 import { createGeminiJudge } from './gemini-llm.js';
 
@@ -191,11 +191,12 @@ function formatContext(texts: string[]): string {
   return texts.map((text, index) => `[${index + 1}] ${text}`).join('\n\n');
 }
 
-async function answerWithFixedContext(input: {
+export async function answerWithFixedContext(input: {
   apiKey: string;
   model: string;
   context: string;
   question: string;
+  complete?: ToolCompletion;
 }): Promise<{ answer: string; truncated: boolean }> {
   const result = await runToolLoop({
     apiKey: input.apiKey,
@@ -204,6 +205,7 @@ async function answerWithFixedContext(input: {
     userMessages: [{ role: 'user', content: input.question }],
     tools: [],
     execute: async () => ({ content: '' }),
+    complete: input.complete,
   });
   return { answer: result.answer, truncated: result.truncated };
 }
@@ -370,9 +372,7 @@ export async function runCoverageAb(options: CoverageAbOptions): Promise<Coverag
       for (const { qa, questionIndex } of targets) {
         const pool = (await real.river.searchMemory(qa.question, POOL_K)).slice(0, POOL_K);
         if (pool.length === 0) { warnings.push(`${sampleId} q${questionIndex}: empty pool`); continue; }
-        const { logits } = await reranker.scorePairs(
-          pool.map(result => ({ query: qa.question, passage: result.entry.text })),
-        );
+        const { logits } = await scoreRerankPool(reranker, qa.question, pool);
         const vectors = await embedder.embedTextBatch(pool.map(result => result.entry.text));
         const relevance = pool.map((_, index) => logits[index] ?? Number.NEGATIVE_INFINITY);
         const coveragePool = mmrOrder(relevance, vectors, options.lambda).map(index => pool[index]);

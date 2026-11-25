@@ -1,4 +1,6 @@
-import { open, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { open, mkdir, readFile, rename, rm } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 export interface ServiceLock {
@@ -8,6 +10,7 @@ export interface ServiceLock {
 }
 
 const TAKEOVER_STALE_MS = 10_000;
+const BOOT_TIME_TOLERANCE_MS = 5_000;
 
 export function serviceLockPath(dataDir: string): string {
   return path.join(dataDir, 'mr-serve.lock');
@@ -34,18 +37,31 @@ async function readLockPid(lockPath: string): Promise<number | null> {
   }
 }
 
-async function readTakeover(lockPath: string): Promise<{ pid: number | null; mtimeMs: number } | null> {
+async function readLockState(lockPath: string): Promise<{ pid: number | null; mtimeMs: number } | null> {
+  let handle;
   try {
-    const [raw, metadata] = await Promise.all([readFile(lockPath, 'utf8'), stat(lockPath)]);
+    handle = await open(lockPath, 'r');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+
+  try {
+    const raw = await handle.readFile('utf8');
+    const metadata = await handle.stat();
     const pid = Number.parseInt(raw.trim(), 10);
     return {
       pid: Number.isInteger(pid) && pid > 0 ? pid : null,
       mtimeMs: metadata.mtimeMs,
     };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+  } finally {
+    await handle.close();
   }
+}
+
+function isFromPreviousBoot(mtimeMs: number): boolean {
+  const bootTimeMs = Date.now() - os.uptime() * 1000;
+  return mtimeMs < bootTimeMs - BOOT_TIME_TOLERANCE_MS;
 }
 
 function waitForTakeover(): Promise<void> {
@@ -62,30 +78,6 @@ export async function acquireServiceLock(
 
   for (;;) {
     try {
-      const handle = await open(lockPath, 'wx');
-      try {
-        await handle.writeFile(`${pid}\n`, 'utf8');
-      } finally {
-        await handle.close();
-      }
-      return {
-        path: lockPath,
-        pid,
-        release: () => releaseServiceLock(dataDir, pid),
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-
-    const existingPid = await readLockPid(lockPath);
-    if (existingPid !== null && isPidAlive(existingPid)) {
-      throw new Error(
-        `mr-serve lockfile ${lockPath} is held by live pid ${existingPid}; ` +
-        'stop that process or remove the lockfile if it is stale.',
-      );
-    }
-
-    try {
       const handle = await open(takeoverPath, 'wx');
       try {
         await handle.writeFile(`${pid}\n`, 'utf8');
@@ -95,7 +87,7 @@ export async function acquireServiceLock(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 
-      const takeover = await readTakeover(takeoverPath);
+      const takeover = await readLockState(takeoverPath);
       if (takeover && (
         (takeover.pid !== null && isPidAlive(takeover.pid)) ||
         Date.now() - takeover.mtimeMs < TAKEOVER_STALE_MS
@@ -108,20 +100,42 @@ export async function acquireServiceLock(
     }
 
     try {
-      const currentPid = await readLockPid(lockPath);
-      if (currentPid !== null && isPidAlive(currentPid)) {
+      let currentLock = await readLockState(lockPath);
+      if (
+        currentLock !== null && currentLock.pid === null &&
+        Date.now() - currentLock.mtimeMs < TAKEOVER_STALE_MS
+      ) {
+        await waitForTakeover();
+        currentLock = await readLockState(lockPath);
+        if (
+          currentLock !== null && currentLock.pid === null &&
+          Date.now() - currentLock.mtimeMs < TAKEOVER_STALE_MS
+        ) {
+          continue;
+        }
+      }
+
+      if (
+        currentLock !== null && currentLock.pid !== null &&
+        isPidAlive(currentLock.pid) && !isFromPreviousBoot(currentLock.mtimeMs)
+      ) {
         throw new Error(
-          `mr-serve lockfile ${lockPath} is held by live pid ${currentPid}; ` +
+          `mr-serve lockfile ${lockPath} is held by live pid ${currentLock.pid}; ` +
           'stop that process or remove the lockfile if it is stale.',
         );
       }
 
-      await rm(lockPath, { force: true });
-      const handle = await open(lockPath, 'wx');
+      const temporaryPath = `${lockPath}.${randomUUID()}.tmp`;
       try {
-        await handle.writeFile(`${pid}\n`, 'utf8');
+        const handle = await open(temporaryPath, 'wx');
+        try {
+          await handle.writeFile(`${pid}\n`, 'utf8');
+        } finally {
+          await handle.close();
+        }
+        await rename(temporaryPath, lockPath);
       } finally {
-        await handle.close();
+        await rm(temporaryPath, { force: true });
       }
       return {
         path: lockPath,
@@ -129,7 +143,8 @@ export async function acquireServiceLock(
         release: () => releaseServiceLock(dataDir, pid),
       };
     } finally {
-      await rm(takeoverPath, { force: true });
+      const takeover = await readLockState(takeoverPath);
+      if (takeover?.pid === pid) await rm(takeoverPath, { force: true });
     }
   }
 }

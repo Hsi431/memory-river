@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -8,7 +10,7 @@ import {
   type LlmClient,
   type MemoryRiver,
 } from '@memory-river/core';
-import { readOnboardingConfig, type OnboardingConfig } from './onboarding-config.js';
+import { defaultOnboardingConfig, readOnboardingConfig, type OnboardingConfig } from './onboarding-config.js';
 
 class OpenAICompatibleClient implements LlmClient {
   constructor(
@@ -109,7 +111,12 @@ function firstEnv(...names: string[]): string | undefined {
   return undefined;
 }
 
+export function isMcpReadOnly(): boolean {
+  return firstEnv('MEMORY_RIVER_MCP_READONLY') === '1';
+}
+
 function llmFromEnv(): LlmClient | undefined {
+  if (firstEnv('MEMORY_RIVER_LLM_PROVIDER') !== 'openai') return undefined;
   const apiKey = firstEnv('MEMORY_RIVER_LLM_API_KEY', 'OPENAI_API_KEY');
   const baseUrl = firstEnv('MEMORY_RIVER_LLM_BASE_URL', 'OPENAI_BASE_URL');
   const model = firstEnv('MEMORY_RIVER_LLM_MODEL', 'OPENAI_MODEL');
@@ -123,29 +130,38 @@ function llmFromEnv(): LlmClient | undefined {
   );
 }
 
-export function configFromEnv(): AdapterConfig {
-  const fileConfig = readOnboardingConfig();
-  const defaults = fileConfig ?? undefined;
+// The default data dir keeps the historical shared-memory path; any other data dir gets its own
+// RAM dir, so a second instance (tests, another user store) never opens the first one's RAM copy.
+export function defaultRamDir(dataDir: string): string {
+  const ramRoot = fs.existsSync('/dev/shm') ? '/dev/shm' : os.tmpdir();
+  const defaultDataDir = path.join(os.homedir(), '.memory-river');
+  if (path.resolve(dataDir) === path.resolve(defaultDataDir)) return path.join(ramRoot, 'memory-river');
+  const digest = createHash('sha256').update(path.resolve(dataDir)).digest('hex').slice(0, 12);
+  return path.join(ramRoot, `memory-river-${digest}`);
+}
+
+export function configFromEnv(configPath?: string): AdapterConfig {
+  const defaults = readOnboardingConfig(configPath) ?? defaultOnboardingConfig();
   const dataDir = firstEnv('MEMORY_RIVER_DATA_DIR', 'DATA_DIR')
-    ?? defaults?.dataDir
+    ?? defaults.dataDir
     ?? path.join(os.homedir(), '.memory-river');
   const ramDir = firstEnv('MEMORY_RIVER_RAM_DIR', 'RAM_DIR')
-    ?? path.join('/dev/shm', 'memory-river');
+    ?? defaultRamDir(dataDir);
   return {
     dataDir,
     ramDir,
-    storageMode: (firstEnv('MEMORY_RIVER_STORAGE_MODE') ?? defaults?.storageMode ?? 'auto') as AdapterConfig['storageMode'],
+    storageMode: (firstEnv('MEMORY_RIVER_STORAGE_MODE') ?? defaults.storageMode) as AdapterConfig['storageMode'],
     sessionKey: firstEnv('MEMORY_RIVER_SESSION_KEY') ?? 'memory-river-mcp',
     ollamaUrl: firstEnv('MEMORY_RIVER_OLLAMA_URL', 'OLLAMA_URL', 'OLLAMA_BASE_URL')
-      ?? defaults?.embedding.baseUrl
+      ?? defaults.embedding.baseUrl
       ?? 'http://localhost:11434',
     embeddingModel: firstEnv('MEMORY_RIVER_EMBEDDING_MODEL', 'OLLAMA_EMBEDDING_MODEL')
-      ?? defaults?.embedding.model
+      ?? defaults.embedding.model
       ?? 'hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF',
-    embeddingProvider: defaults?.embedding.provider ?? 'ollama',
-    embeddingApiKey: defaults?.embedding.apiKey,
-    embeddingDimensions: defaults?.embedding.dimensions ?? 1024,
-    concentration: defaults?.concentration ?? { provider: 'degraded' },
+    embeddingProvider: defaults.embedding.provider,
+    embeddingApiKey: defaults.embedding.apiKey,
+    embeddingDimensions: defaults.embedding.dimensions ?? 1024,
+    concentration: defaults.concentration,
     llm: llmFromEnv(),
   };
 }

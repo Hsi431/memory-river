@@ -219,23 +219,24 @@ export class GraphStore {
    * 將三元組文字 Embedding 化（用於 ANN 搜尋）
    * 拼接方式：subject + relation + object
    */
-  private async embedTriple(triple: Triple): Promise<number[]> {
+  private async embedTriple(triple: Triple): Promise<number[] | null> {
     const text = `${triple.subject} ${triple.relation} ${triple.object}`;
     try {
       return await this.embedder.embed(text, 'store');
     } catch (err) {
-      console.warn(`[GraphStore] embedTriple failed; falling back to zero vector:`, err);
-      return Array(this.vectorDim).fill(0);
+      console.warn(`[GraphStore] embedTriple failed; skipping triple:`, err);
+      return null;
     }
   }
 
   /**
    * 寫入單筆三元組
    */
-  async addTriple(triple: Triple, sourceMemoryId: string): Promise<GraphTriple> {
+  async addTriple(triple: Triple, sourceMemoryId: string): Promise<GraphTriple | null> {
     await this.ensureInitialized();
 
     const embedding = await this.embedTriple(triple);
+    if (!embedding || embedding.length === 0) return null;
     const nowMs = Date.now();
 
     const entry: any = {
@@ -288,19 +289,27 @@ export class GraphStore {
     try {
       embeddings = await this.embedder.embedBatch(texts);
     } catch (err) {
-      console.warn(`[GraphStore] embedBatch failed; falling back to zero vectors:`, err);
-      embeddings = texts.map(() => Array(this.vectorDim).fill(0));
+      console.warn(`[GraphStore] embedBatch failed; skipping triples:`, err);
+      return [];
     }
 
-    const entries = triples.map((triple, i) => ({
-      id: randomUUID(),
-      subject: triple.subject,
-      relation: triple.relation,
-      object: triple.object,
-      sourceMemoryId,
-      vector: embeddings[i] || Array(this.vectorDim).fill(0),
-      createdAt: nowMs,
-    }));
+    const entries = triples.flatMap((triple, i) => {
+      const vector = embeddings[i];
+      if (!Array.isArray(vector) || vector.length === 0) {
+        console.warn(`[GraphStore] embedBatch returned no vector for triple ${i}; skipping triple`);
+        return [];
+      }
+      return [{
+        id: randomUUID(),
+        subject: triple.subject,
+        relation: triple.relation,
+        object: triple.object,
+        sourceMemoryId,
+        vector,
+        createdAt: nowMs,
+      }];
+    });
+    if (entries.length === 0) return [];
 
     await this.ramTable.add(entries);
     await recordAuxTableWrite(this.ramTable, "ram:graph_triples");
@@ -478,6 +487,25 @@ export class GraphStore {
       console.warn(`[GraphStore] findTriplesByMemoryId failed:`, err.message);
       return [];
     }
+  }
+
+  async deleteTriplesByMemoryId(memoryId: string): Promise<void> {
+    await this.ensureInitialized();
+    if (!memoryId) return;
+
+    const predicate = `\`sourceMemoryId\` = '${memoryId.replace(/'/g, "''")}'`;
+    await this.ramTable.delete(predicate);
+    await recordAuxTableWrite(this.ramTable, "ram:graph_triples");
+    if (!this.ssdAvailable) return;
+
+    try {
+      await this.ssdTable.delete(predicate);
+    } catch (err: any) {
+      this.handleSsdError(err, "deleteTriplesByMemoryId");
+      throw err;
+    }
+    this.handleSsdSuccess();
+    await recordAuxTableWrite(this.ssdTable, "ssd:graph_triples");
   }
 
   /**

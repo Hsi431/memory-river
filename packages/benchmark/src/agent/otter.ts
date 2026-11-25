@@ -6,6 +6,7 @@ import {
 
 import {
   runToolLoop,
+  type ToolCompletion,
   type ToolResultEvent,
   type ToolTraceEntry,
 } from '../harness/tool-llm.js';
@@ -47,6 +48,10 @@ export function effectiveSystemPrompt(): string {
   return process.env.MR_CARDINALITY_HINT === '1'
     ? `${SYSTEM_PROMPT}\n\n${CARDINALITY_HINT}`
     : SYSTEM_PROMPT;
+}
+
+export function otterReadonlyEnabled(): boolean {
+  return process.env.MR_OTTER_READONLY !== '0';
 }
 
 export const OTTER_TOOLS: DeepSeekTool[] = [
@@ -326,6 +331,7 @@ export async function runOtter(input: {
   onToolResult?(event: ToolResultEvent): void;
   deliveredContext?: DeliveredContextCapture;
   extraAutoRecallContext?: string[];
+  complete?: ToolCompletion;
 }): Promise<OtterResult> {
   const assembled = await (input.river as any).assembleContext(
     [{ role: 'user', content: input.question }],
@@ -352,10 +358,9 @@ export async function runOtter(input: {
     ? `${effectiveSystemPrompt()}\n\n${contextText}`
     : effectiveSystemPrompt();
   const allowedSessionKeys = new Set([...input.sessionKeys, input.conversationKey]);
-  // Confirmatory A/B runs set MR_OTTER_READONLY=1 to disable agent-induced writes that would
-  // bleed across questions in the same conversation-shared river (memory_store injects fake
-  // memories; gwm_* leaves working-memory state on; skill_save mutates skills). Reads stay live.
-  const otterReadonly = process.env.MR_OTTER_READONLY === '1';
+  // Agent-induced writes would bleed across questions in the same conversation-shared river.
+  // Read-only is the safe default; set MR_OTTER_READONLY=0 to opt into benchmark writes.
+  const otterReadonly = otterReadonlyEnabled();
 
   const result = await runToolLoop({
     apiKey: input.llm.apiKey,
@@ -363,6 +368,7 @@ export async function runOtter(input: {
     system,
     userMessages: [{ role: 'user', content: input.question }],
     tools: OTTER_TOOLS,
+    complete: input.complete,
     onToolResult: input.onToolResult,
     async execute(name, args) {
       if (

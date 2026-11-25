@@ -380,6 +380,7 @@ export class Retriever {
   private hooksEngine: HooksEngine | null = null;
   private boostHealthQueue: string[] = [];
   private boostHealthQueueRunning = false;
+  private queueDropCounts = new Map<string, number>();
   private recallMetadataQueue: Array<Array<MemoryEntry | { id: string }>> = [];
   private recallMetadataQueueRunning = false;
 
@@ -806,6 +807,10 @@ export class Retriever {
   }
 
   private recordQueueDrop(operationName: string): void {
+    const dropCount = (this.queueDropCounts.get(operationName) ?? 0) + 1;
+    this.queueDropCounts.set(operationName, dropCount);
+    console.warn(`[Retriever] background write queue dropped oldest item: ${operationName} (count=${dropCount})`);
+
     const recordConflictStat = (this.store as any).recordConflictStat;
     if (typeof recordConflictStat !== "function") return;
     recordConflictStat.call(this.store, {
@@ -817,6 +822,10 @@ export class Retriever {
     }).catch((err: any) => {
       console.warn('[Retriever] conflict_stats drop metric failed:', err?.message ?? err);
     });
+  }
+
+  getBackgroundWriteQueueDropCount(operationName: string): number {
+    return this.queueDropCounts.get(operationName) ?? 0;
   }
 
   private recordBackgroundWriteFailure(operationName: string, err: any): void {

@@ -32,6 +32,12 @@ import {
 
 const DEBUG = true;
 
+function isHistorySessionSummary(entry: { category?: unknown; text?: unknown }): boolean {
+  return entry.category === 'history'
+    && typeof entry.text === 'string'
+    && entry.text.trimStart().startsWith('【前情提要】');
+}
+
 // ============================================================================
 // Retry Utility — 指數退避重試，避免 API/LanceDB 瞬斷卡死系統
 // ============================================================================
@@ -117,6 +123,7 @@ export class InboxWatcher {
   private riverCapsuleFailureCounts = new Map<string, number>();
   // 每個 parentId 的寫入鎖，防止同時對同一個記憶發出兩次 UPDATE
   private parentIdLocks = new Map<string, Promise<void>>();
+  private slotSubjectLocks = new Map<string, Promise<void>>();
 
   private async withParentLock<T>(parentId: string, fn: () => Promise<T>): Promise<T> {
     const existing = this.parentIdLocks.get(parentId) ?? Promise.resolve();
@@ -131,6 +138,22 @@ export class InboxWatcher {
       // 只在沒有後繼等待者時才清除，避免 Map 洩漏
       if (this.parentIdLocks.get(parentId) === next) {
         this.parentIdLocks.delete(parentId);
+      }
+    }
+  }
+
+  private async withSlotSubjectLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const existing = this.slotSubjectLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>(resolve => { release = resolve; });
+    this.slotSubjectLocks.set(key, next);
+    try {
+      await existing;
+      return await fn();
+    } finally {
+      release();
+      if (this.slotSubjectLocks.get(key) === next) {
+        this.slotSubjectLocks.delete(key);
       }
     }
   }
@@ -659,8 +682,37 @@ export class InboxWatcher {
    * 不處理檔案狀態（由 processFile 統一管理 rename/delete）
    */
   private async _processMemoryEntry(procPath: string): Promise<void> {
-    const fileName = path.basename(procPath);
     const item = JSON.parse(fs.readFileSync(procPath, "utf-8"));
+    // ── Structured Slot 抽取（Phase 1）────────────────────────
+    // confidence >= 0.5 → 建立 Slot；< 0.5 → 純 free-text
+    // ⚠️ 實作只有這一道閘。註解曾寫過 0.8/0.5 三段式與待審核池，那是從未實作的設計，勿再引用。
+    let slotData: { slotKey: string; slotValue: number | string | boolean; subject: string | null; cardinality: 'single' | 'multi' | null; confidence: number; extractionDomain: "technical" | "identity" | "preference" | "free_text"; isStructured: boolean } | null = null;
+    try {
+      slotData = await this.extractSlot(item.text, item.category);
+      if (slotData?.isStructured) {
+        console.log('[inbox-watcher] Slot extracted: key=' + slotData.slotKey + ' value=' + slotData.slotValue + ' confidence=' + slotData.confidence);
+      }
+    } catch (slotErr) {
+      console.warn('[inbox-watcher] Slot extraction failed; falling back to free text:', slotErr);
+    }
+
+    if (slotData?.isStructured === true
+      && (slotData.confidence ?? 0) >= 0.5
+      && !isHistorySessionSummary(item)
+      && slotData.slotKey) {
+      const subject = getEffectiveSlotSubject({ slotSubject: slotData.subject, subject: item.metadata?.subject });
+      const key = slotData.slotKey.trim().toLowerCase() + '\u0000' + (subject ?? '');
+      return this.withSlotSubjectLock(key, () => this._processMemoryEntryCore(procPath, item, slotData));
+    }
+    return this._processMemoryEntryCore(procPath, item, slotData);
+  }
+
+  private async _processMemoryEntryCore(
+    procPath: string,
+    item: any,
+    slotData: { slotKey: string; slotValue: number | string | boolean; subject: string | null; cardinality: 'single' | 'multi' | null; confidence: number; extractionDomain: "technical" | "identity" | "preference" | "free_text"; isStructured: boolean } | null,
+  ): Promise<void> {
+    const fileName = path.basename(procPath);
     let importanceVal = item.importance ?? 1.0;
 
     // ── 自然語言膠囊生成 ────────────────────────────────────────
@@ -670,19 +722,6 @@ export class InboxWatcher {
     let capsuleExecutionSteps: string[] = [];
     let capsuleConfidence = 100;
     const capsuleType = item.capsuleType ?? 'working_memory';
-
-    // ── Structured Slot 抽取（Phase 1）────────────────────────
-    // confidence >= 0.5 → 建立 Slot；< 0.5 → 純 free-text
-    // ⚠️ 實作只有這一道閘。註解曾寫過 0.8/0.5 三段式與待審核池，那是從未實作的設計，勿再引用。
-    let slotData: { slotKey: string; slotValue: number | string | boolean; subject: string | null; cardinality: 'single' | 'multi' | null; confidence: number; extractionDomain: "technical" | "identity" | "preference" | "free_text"; isStructured: boolean } | null = null;
-    try {
-      slotData = await this.extractSlot(item.text, item.category);
-      if (slotData?.isStructured) {
-        console.log(`[inbox-watcher] Slot extracted: key=${slotData.slotKey} value=${slotData.slotValue} confidence=${slotData.confidence}`);
-      }
-    } catch (slotErr) {
-      console.warn('[inbox-watcher] Slot extraction failed; falling back to free text:', slotErr);
-    }
 
     if (hasCapsuleMeta) {
       const capsuleMetaMatch = item.text.match(/\[CAPSULE_META\]\s*\{([^}]+)\}/);
@@ -721,20 +760,73 @@ export class InboxWatcher {
     }
 
     // ── 重複檢查 ───────────────────────────────────────────────
+    let similar: Awaited<ReturnType<MemoryStore['hybridVectorSearch']>> = [];
     try {
-      const similar = await this.store.hybridVectorSearch(item.text, 3);
+      similar = await this.store.hybridVectorSearch(item.text, 3);
+    } catch (dupErr) {
+      console.warn("[InboxWatcher] Duplicate check failed; continuing write:", dupErr);
+    }
+    {
       // 只有 BM25 命中的候選 rawDistance 是 Infinity，而融合排序之後它可以排到第 0 位，
       // 所以不能只看 similar[0]，要取第一筆有限距離的，否則重複記憶會被判成不重複而寫進去。
       const nearest = similar.find(r => Number.isFinite(r.rawDistance));
       if (nearest) {
         const dist = nearest.rawDistance;
         if (dist < 0.15) {
-          console.log(`[InboxWatcher] Skipping duplicate memory dist=${dist.toFixed(3)}`);
-          return; // 不刪檔，由 processFile 統一處理
+          const slotEligibleForDedup = slotData?.isStructured === true
+            && (slotData.confidence ?? 0) >= 0.5
+            && !isHistorySessionSummary(item)
+            && !!slotData.slotKey;
+          const slotEntries = slotEligibleForDedup
+            ? await this.store.searchBySlotKey(slotData?.slotKey ?? '')
+            : [];
+          const newSubject = slotEligibleForDedup
+            ? getEffectiveSlotSubject({ slotSubject: slotData?.subject, subject: item.metadata?.subject })
+            : null;
+          const metadataForSlotEntry = (entry: (typeof slotEntries)[number]) => typeof entry.metadata === 'string'
+            ? this.parseMetadata(entry.metadata)
+            : entry.metadata ?? {};
+          const hasSameSubject = (entry: (typeof slotEntries)[number]) =>
+            maySupersede(newSubject, getEffectiveSlotSubject(metadataForSlotEntry(entry)));
+          const slotValueChanged = slotEntries.some(existing =>
+            existing.id === nearest.entry.id
+              && existing.slotKey === slotData?.slotKey
+              && !Object.is(existing.slotValue, slotData?.slotValue)
+              && hasSameSubject(existing));
+          if (!slotValueChanged) {
+            if (slotEligibleForDedup && slotData && slotData.cardinality !== 'multi') {
+              const duplicateSlotEntry = slotEntries.find(existing =>
+                existing.id === nearest.entry.id
+                  && existing.slotKey === slotData.slotKey
+                  && Object.is(existing.slotValue, slotData.slotValue)
+                  && hasSameSubject(existing));
+              if (duplicateSlotEntry) {
+                for (const existing of slotEntries) {
+                  if (existing.id === duplicateSlotEntry.id
+                    || existing.slotKey !== slotData.slotKey
+                    || Object.is(existing.slotValue, slotData.slotValue)) continue;
+                  const metadata = metadataForSlotEntry(existing);
+                  if ((metadata.status !== 'active' && metadata.status != null)
+                    || !hasSameSubject(existing)
+                    || !mayCardinalitySupersede(slotData.cardinality, metadata.slotCardinality)) continue;
+                  const result = await this.statusManager.changeStatus({
+                    memoryId: existing.id,
+                    toStatus: 'deprecated',
+                    reason: 'slot_supersedes',
+                    source: 'inbox-watcher.slot',
+                    supersededBy: duplicateSlotEntry.id,
+                  });
+                  if (result && result.ok === false) {
+                    throw new Error(`LanceDB commit failed to supersede slot memory ${existing.id}: ${result.error ?? 'unknown error'}`);
+                  }
+                }
+              }
+            }
+            console.log(`[InboxWatcher] Skipping duplicate memory dist=${dist.toFixed(3)}`);
+            return; // 不刪檔，由 processFile 統一處理
+          }
         }
       }
-    } catch (dupErr) {
-      console.warn("[InboxWatcher] Duplicate check failed; continuing write:", dupErr);
     }
 
     // ── 因果關係判斷（可能 API 瞬斷）────────────────────────────
@@ -811,7 +903,10 @@ export class InboxWatcher {
     let storedEntryId = '';
 
     // Slot routing：低 confidence（< 0.5）不走 slot 邏輯
-    const isSlotEligible = slotData?.isStructured === true && (slotData.confidence ?? 0) >= 0.5;
+    const isHistorySummary = isHistorySessionSummary(item);
+    const isSlotEligible = !isHistorySummary
+      && slotData?.isStructured === true
+      && (slotData.confidence ?? 0) >= 0.5;
     const effectiveNewSubject = isSlotEligible && slotData
       ? getEffectiveSlotSubject({ slotSubject: slotData.subject, subject: metadataObj.subject })
       : null;
@@ -876,13 +971,16 @@ export class InboxWatcher {
             && oldSubject !== null
             && effectiveNewSubject === oldSubject
             && parentStatus === 'active') {
-            await this.statusManager.changeStatus({
+            const statusResult = await this.statusManager.changeStatus({
               memoryId: relation.parentId!,
               toStatus: 'deprecated',
               reason: 'causal_update',
               source: 'inbox-watcher.update',
               supersededBy: storedEntryId,
             });
+            if (statusResult && statusResult.ok === false) {
+              throw new Error(`LanceDB commit failed to deprecate memory ${relation.parentId}: ${statusResult.error ?? 'unknown error'}`);
+            }
           }
 
           if ((oldMemory as any).slotKey) {
@@ -1188,6 +1286,7 @@ export class InboxWatcher {
           }
           // status 為 'active' 或未設定時視為有效
           if (meta.status !== 'active' && meta.status != null) return false;
+          if (isHistorySessionSummary(e)) return false;
           return maySupersede(subject, getEffectiveSlotSubject(meta))
             && mayCardinalitySupersede(cardinality, meta.slotCardinality);
         })

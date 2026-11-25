@@ -148,7 +148,7 @@ test('compact passes exhaustive through to the concentrator context', async (t) 
   engine.activeConcentrator = {
     async concentrate(messages, _dryRun, _force, context) {
       contexts.push(context);
-      return { wasConcentrated: false, messages };
+      return { wasConcentrated: false, status: 'skipped', messages };
     },
   };
   fs.writeFileSync(sessionFile, [

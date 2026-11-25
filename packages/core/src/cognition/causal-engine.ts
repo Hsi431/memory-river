@@ -196,10 +196,14 @@ export class CausalEngine {
     ]);
 
     const normalize = (t: string) =>
-      t.toLowerCase()
-        .replace(/[^\w\s]/g, " ")
-        .split(/\s+/)
-        .filter(w => w.length > 1 && !STOP_WORDS.has(w));
+      (t.toLowerCase().match(/[\p{Script=Han}]+|[\w]+/gu) ?? []).flatMap(token => {
+        if (/^\p{Script=Han}+$/u.test(token)) {
+          const characters = Array.from(token);
+          return Array.from({ length: Math.max(0, characters.length - 1) }, (_, index) =>
+            characters.slice(index, index + 2).join(''));
+        }
+        return token.length > 1 && !STOP_WORDS.has(token) ? [token] : [];
+      });
 
     const setA = new Set(normalize(textA));
     const setB = new Set(normalize(textB));

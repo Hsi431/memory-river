@@ -22,11 +22,12 @@ function memory(id, createdAt, text = id) {
 
 function makeHarness(memories, decisions) {
   const calls = { update: 0, delete: 0, statusBatch: 0 };
+  const updates = [];
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'night-consolidation-plan-'));
   const store = {
     queryAll: async () => memories,
     getById: async (id) => memories.find((entry) => entry.id === id) ?? null,
-    update: async () => { calls.update++; return true; },
+    update: async (id, fields) => { calls.update++; updates.push({ id, fields }); return true; },
     delete: async () => { calls.delete++; return true; },
     searchBySlotKey: async () => [],
   };
@@ -39,7 +40,7 @@ function makeHarness(memories, decisions) {
       },
     },
   }, path.join(logDir, 'consolidation.jsonl'));
-  return { calls, consolidator, logDir };
+  return { calls, consolidator, logDir, updates };
 }
 
 function cleanupHarness(harness) {
@@ -97,6 +98,39 @@ test('consolidation without options executes the existing apply path', async () 
     const result = await harness.consolidator.consolidateRange('all', 'normal-run');
     assert.equal(result.planOnly, false);
     assert.equal(harness.calls.update, 1);
+  } finally {
+    cleanupHarness(harness);
+  }
+});
+
+test('night consolidation marks rewritten text and preserves provenance metadata', async () => {
+  const now = Date.now();
+  const rewritten = memory('rewrite-with-provenance', now);
+  rewritten.metadata = JSON.stringify({ sourceEntryIds: [7, 8], confidence: 0.4, retained: 'yes' });
+  const confidenceOnly = memory('confidence-only', now);
+  confidenceOnly.metadata = JSON.stringify({ sourceEntryIds: [9], retained: 'also' });
+  const harness = makeHarness([rewritten, confidenceOnly], [
+    { action: 'update', memoryId: rewritten.id, newText: 'rewritten memory', newConfidence: 0.9, reason: 'clarified' },
+    { action: 'update', memoryId: confidenceOnly.id, newConfidence: 0.7, reason: 'regraded' },
+  ]);
+
+  try {
+    await harness.consolidator.consolidateRange('all', 'rewrite-metadata-run');
+    const rewrite = harness.updates.find((item) => item.id === rewritten.id);
+    assert.equal(rewrite.fields.text, 'rewritten memory');
+    const rewriteMetadata = JSON.parse(rewrite.fields.metadata);
+    assert.deepEqual(rewriteMetadata.sourceEntryIds, [7, 8]);
+    assert.equal(rewriteMetadata.retained, 'yes');
+    assert.equal(rewriteMetadata.confidence, 0.9);
+    assert.equal(typeof rewriteMetadata.textRewrittenAt, 'number');
+    assert.equal(rewriteMetadata.textRewrittenBy, 'night-consolidation');
+
+    const confidence = harness.updates.find((item) => item.id === confidenceOnly.id);
+    const confidenceMetadata = JSON.parse(confidence.fields.metadata);
+    assert.deepEqual(confidenceMetadata.sourceEntryIds, [9]);
+    assert.equal(confidenceMetadata.retained, 'also');
+    assert.equal(confidenceMetadata.confidence, 0.7);
+    assert.equal(Object.hasOwn(confidenceMetadata, 'textRewrittenAt'), false);
   } finally {
     cleanupHarness(harness);
   }

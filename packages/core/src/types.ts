@@ -2,7 +2,6 @@
  * Unified Types - memory-river
  * Merged from v4/types.ts + context-river/concentrator.ts
  */
-import * as os from 'node:os';
 import type { MemoryReranker } from './retrieval/reranker.js';
 
 export type MemoryCategory =
@@ -451,6 +450,7 @@ export interface PluginConfig {
     embeddingModel?: string;
   };
   concentration?: {
+    assembleConcentration?: boolean;
     model?: string;
     provider?: 'codex' | 'gemini' | 'deepseek';
     geminiApiKey?: string;
@@ -532,13 +532,14 @@ export const DEFAULT_CONFIG: Omit<Required<PluginConfig>, 'dbPath' | 'ramDbPath'
     embeddingModel: "hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF",
   },
 concentration: {
+    assembleConcentration: true,
     model: 'gemini-2.5-flash-lite',
     /** Provider chain starts with Codex when this is 'codex'; old values retain their legacy chain. */
     provider: 'codex',
     geminiApiKey: "",
     codexModel: 'gpt-5.6-luna',
     codexReasoningEffort: 'low',
-    codexWorkdir: os.homedir(),
+    codexWorkdir: '',
     codexTimeoutMs: 120000,
     maxTokens: 32768,
     deepseekApiKey: "",

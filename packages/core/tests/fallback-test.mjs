@@ -2,7 +2,7 @@
  * Fallback Capsule Test
  * 直接測試 ConcentratorAdapter，在 LLM 全 fail 時觸發 buildFallbackCapsule
  */
-import { ConcentratorAdapter } from './dist/concentrator-adapter.js';
+import { ConcentratorAdapter } from '../dist/distill/concentrator-adapter.js';
 
 // 建立豐富的 mock messages，湊到足以觸發水位線
 const mockMessages = [

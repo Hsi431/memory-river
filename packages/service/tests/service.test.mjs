@@ -14,6 +14,8 @@ import {
   createMemoryRiverHttpServer,
   serviceLockPath,
 } from '../dist/index.js';
+import { isAllowedRequest, requestPath } from '../dist/http.js';
+import { createMemoryRiverClient } from '../../claude-code-plugin/lib/http.mjs';
 
 async function bestEffortRm(target, options) {
   try {
@@ -74,11 +76,16 @@ async function withTestService(fn) {
   }
 }
 
-async function requestJson(server, method, url, body) {
+async function requestJson(server, method, url, body, headers = {}) {
   const payload = body === undefined ? [] : [JSON.stringify(body)];
   const request = Readable.from(payload);
   request.method = method;
   request.url = url;
+  request.headers = {
+    host: '127.0.0.1:4791',
+    'content-type': 'application/json',
+    ...headers,
+  };
 
   return await new Promise((resolve, reject) => {
     const response = {
@@ -101,15 +108,200 @@ async function requestJson(server, method, url, body) {
   });
 }
 
-test('health returns ok, version, dataDir, and uptime', async () => {
-  await withTestService(async ({ dataDir, server }) => {
+test('health returns ok, version, and uptime without the data directory', async () => {
+  await withTestService(async ({ server }) => {
     const { status, body } = await requestJson(server, 'GET', '/health');
     assert.equal(status, 200);
     assert.equal(body.ok, true);
     assert.equal(typeof body.version, 'string');
-    assert.equal(body.dataDir, dataDir);
+    assert.equal('dataDir' in body, false);
     assert.equal(Number.isInteger(body.uptimeSec), true);
   });
+});
+
+test('HTTP request policy rejects cross-site requests and non-JSON POSTs', async () => {
+  const remembered = [];
+  const server = createMemoryRiverHttpServer({
+    river: { async remember(text) { remembered.push(text); } },
+    dataDir: path.join(tmpdir(), 'memory-river-http-security-test'),
+    sessionKey: 'http-security-test',
+  });
+
+  const externalHost = await requestJson(server, 'POST', '/store', { text: 'blocked by host' }, {
+    host: '127.0.0.1.attacker.example:4791',
+  });
+  assert.equal(externalHost.status, 403);
+
+  const externalOrigin = await requestJson(server, 'POST', '/store', { text: 'blocked by origin' }, {
+    origin: 'https://attacker.example',
+  });
+  assert.equal(externalOrigin.status, 403);
+
+  const textPlain = await requestJson(server, 'POST', '/store', { text: 'blocked by content type' }, {
+    'content-type': 'text/plain',
+  });
+  assert.equal(textPlain.status, 415);
+
+  const pluginRequest = await requestJson(server, 'POST', '/store', { text: 'plugin request' }, {
+    host: 'localhost:4791',
+  });
+  assert.equal(pluginRequest.status, 200);
+
+  const localOrigin = await requestJson(server, 'POST', '/store', { text: 'loopback origin' }, {
+    host: '[::1]:4791',
+    origin: 'http://127.0.0.1:7777',
+  });
+  assert.equal(localOrigin.status, 200);
+  assert.deepEqual(remembered, ['plugin request', 'loopback origin']);
+});
+
+test('HTTP header policy can be called without opening a socket', () => {
+  assert.equal(isAllowedRequest({ host: '127.0.0.1:4791' }), true);
+  assert.equal(isAllowedRequest({ host: 'localhost' }), true);
+  assert.equal(isAllowedRequest({ host: '[::1]:7777' }), true);
+  assert.equal(isAllowedRequest({ host: '127.0.0.1.attacker.example' }), false);
+  assert.equal(isAllowedRequest({ host: 'localhost', origin: 'https://attacker.example' }), false);
+  assert.equal(isAllowedRequest({ host: 'localhost', origin: 'http://[::1]:7777' }), true);
+});
+
+test('ordinary HTTP routes reject bodies larger than one mebibyte', async () => {
+  const remembered = [];
+  const server = createMemoryRiverHttpServer({
+    river: { async remember(text) { remembered.push(text); } },
+    dataDir: path.join(tmpdir(), 'memory-river-http-body-limit-test'),
+    sessionKey: 'http-body-limit-test',
+  });
+
+  const oversized = await requestJson(server, 'POST', '/store', {
+    text: 'x'.repeat(1024 * 1024 + 1),
+  });
+  assert.equal(oversized.status, 413);
+  assert.deepEqual(remembered, []);
+});
+
+test('archive-transcript accepts the large JSON body sent by the plugin', async () => {
+  let archived;
+  const server = createMemoryRiverHttpServer({
+    river: {
+      async archiveTranscript(session, messages) {
+        archived = { session, messages };
+        return { ok: true };
+      },
+    },
+    dataDir: path.join(tmpdir(), 'memory-river-http-archive-size-test'),
+    sessionKey: 'http-archive-size-test',
+  });
+  const content = 'x'.repeat(5 * 1024 * 1024);
+
+  let outgoingRequest;
+  const client = createMemoryRiverClient({
+    baseUrl: 'http://127.0.0.1:4791',
+    fetchImpl: async (url, options) => {
+      outgoingRequest = { url, options };
+      const pathname = url.slice('http://127.0.0.1:4791'.length);
+      const response = await requestJson(
+        server,
+        options.method,
+        pathname,
+        JSON.parse(options.body),
+        options.headers,
+      );
+      return {
+        ok: response.status >= 200 && response.status < 300,
+        status: response.status,
+        json: async () => response.body,
+      };
+    },
+  });
+  const result = await client.archiveTranscript(
+    { sessionKey: 'cc-large-transcript' },
+    [{ role: 'assistant', content }],
+  );
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(outgoingRequest.url, 'http://127.0.0.1:4791/archive-transcript');
+  assert.equal(outgoingRequest.options.method, 'POST');
+  assert.equal(outgoingRequest.options.headers['content-type'], 'application/json');
+  assert.ok(Buffer.byteLength(outgoingRequest.options.body) > 5 * 1024 * 1024);
+  assert.equal(archived.session.sessionKey, 'cc-large-transcript');
+  assert.equal(archived.messages[0].content.length, content.length);
+});
+
+test('rehydrate clamps limit and bleed to safe ranges', async () => {
+  const calls = [];
+  const server = createMemoryRiverHttpServer({
+    river: {
+      async rehydrate(request) {
+        calls.push(request);
+        return request;
+      },
+    },
+    dataDir: path.join(tmpdir(), 'memory-river-http-numeric-limits-test'),
+    sessionKey: 'http-numeric-limits-test',
+  });
+
+  await requestJson(server, 'POST', '/rehydrate', { entryIds: [], limit: 100000, bleed: -3 });
+  await requestJson(server, 'POST', '/rehydrate', { entryIds: [], limit: -5, bleed: 500 });
+
+  assert.equal(calls[0].limit, 100);
+  assert.equal(calls[0].bleed, 0);
+  assert.equal(calls[1].limit, 1);
+  assert.equal(calls[1].bleed, 20);
+});
+
+test('recall clamps limit before calling the memory engine', async () => {
+  const limits = [];
+  const server = createMemoryRiverHttpServer({
+    river: {
+      async recall(_query, limit) {
+        limits.push(limit);
+        return [];
+      },
+    },
+    dataDir: path.join(tmpdir(), 'memory-river-http-recall-limit-test'),
+    sessionKey: 'http-recall-limit-test',
+  });
+
+  const result = await requestJson(server, 'POST', '/recall', { query: 'limit test', limit: 100000 });
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(limits, [100]);
+});
+
+test('malformed request URLs return 400 without an unhandled rejection', async () => {
+  const server = createMemoryRiverHttpServer({
+    river: {},
+    dataDir: path.join(tmpdir(), 'memory-river-http-invalid-url-test'),
+    sessionKey: 'http-invalid-url-test',
+  });
+  const unhandled = [];
+  const onUnhandled = error => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  let status;
+  try {
+    const request = Readable.from([]);
+    request.method = 'POST';
+    request.url = 'http://[';
+    request.headers = { host: '127.0.0.1:4791', 'content-type': 'application/json' };
+    server.emit('request', request, {
+      writeHead(statusCode) { status = statusCode; },
+      end() {},
+    });
+    await new Promise(resolve => setImmediate(resolve));
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  assert.deepEqual(unhandled, []);
+  assert.equal(status, 400);
+});
+
+test('request path parsing does not throw on malformed URLs', () => {
+  let path;
+  assert.doesNotThrow(() => {
+    path = requestPath({ url: 'http://[' });
+  });
+  assert.equal(path, null);
 });
 
 test('store then recall returns the memory and a non-empty block', async () => {

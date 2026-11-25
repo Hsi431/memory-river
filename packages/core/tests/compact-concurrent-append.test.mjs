@@ -44,6 +44,7 @@ test('compact preserves a line appended while concentration is in progress', asy
       await releaseConcentrator.promise;
       return {
         wasConcentrated: true,
+        status: 'complete',
         messages: [{ role: 'assistant', content: 'compacted summary' }],
       };
     },
@@ -96,6 +97,7 @@ test('compact preserves a line appended after reading messages but before concen
     async concentrate() {
       return {
         wasConcentrated: true,
+        status: 'complete',
         messages: [{ role: 'assistant', content: 'compacted summary' }],
       };
     },

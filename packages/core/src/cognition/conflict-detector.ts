@@ -200,7 +200,7 @@ export class ConflictDetector {
 記憶 B（新）：${newText}
 類別：${category}
 
-只回答一個字：「衝突」或「共存」`;
+只輸出 JSON 物件，欄位 conflict 必須是 boolean：{"conflict":true} 或 {"conflict":false}。不得輸出其他文字。`;
 
     if (!this.llm) {
       console.warn('[ConflictDetector] LLM provider not configured; skipping conflict evaluation and defaulting to coexistence');
@@ -209,7 +209,14 @@ export class ConflictDetector {
     try {
       const result = await this.llm.generate(prompt, { purpose: 'conflict-detection' });
       const answer = result.trim();
-      return answer.includes('衝突');
+      const json = answer.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+      try {
+        const parsed = JSON.parse(json);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed.conflict === 'boolean') {
+          return parsed.conflict;
+        }
+      } catch { /* unstructured answers default to coexistence */ }
+      return false;
     } catch (err) {
       console.warn('[ConflictDetector] LLM evaluation failed; defaulting to coexistence:', err);
       this.lastJudgeErrorMessage = err instanceof Error ? err.message : String(err);

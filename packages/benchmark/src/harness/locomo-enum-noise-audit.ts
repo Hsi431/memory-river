@@ -215,6 +215,7 @@ interface RelationProbeQuestion {
 }
 
 interface RelationProbeResult {
+  diagnostic: string;
   metricLabel: string;
   conversations: number;
   category: number;
@@ -238,10 +239,11 @@ interface TraceContext {
   relationThreshold: number;
 }
 
-function usage(): void {
+export function usage(): void {
   console.error(
     'Usage: mr-bench locomo-enum-noise-audit --snapshot-dir DIR ' +
-    '[--conversation conv-26] [--category 1] [--k 50] [--relation-table] [--json]',
+    '[--conversation conv-26] [--category 1] [--k 50] [--relation-table] [--json]\n' +
+    '--relation-table is ORACLE_DIAGNOSTIC — 不是產品分數.',
   );
 }
 
@@ -1318,6 +1320,7 @@ export async function runLocomoRelationProbe(options: AuditOptions): Promise<Rel
 
   const scoredQuestions = fullFanout.filter(question => !question.plannerSkipped).length;
   return {
+    diagnostic: 'ORACLE_DIAGNOSTIC — 不是產品分數',
     metricLabel: 'LoCoMo Relation Discrimination Probe',
     conversations: scoredConversations,
     category: options.category,
@@ -1496,6 +1499,8 @@ function renderOracleMetrics(metrics: RelationOracleMetrics): string[] {
 
 export function renderLocomoRelationProbe(result: RelationProbeResult): string {
   const lines = [
+    result.diagnostic,
+    '',
     '# LoCoMo Relation Discrimination Probe',
     '',
     `${result.metricLabel}: ${result.scoredQuestions}/${result.questions} scored cat${result.category} questions`,

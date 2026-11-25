@@ -98,3 +98,20 @@ test('getTranscriptPath keeps canonical agent keys under the transcript director
   assert.equal(transcriptPath, path.join(transcriptDir, 'agent:foo:bar.jsonl'));
   assert.equal(path.dirname(transcriptPath), transcriptDir);
 });
+
+test('separate archive instances observe transcript appends after a cached read', () => {
+  const identity = makeIdentity('multi-instance-cache');
+  const secondArchive = createTranscriptArchive(process.env.MEMORY_TRANSCRIPT_PATH);
+  const firstTimestamp = 1710001000000;
+  const secondTimestamp = 1710002000000;
+
+  archiveSnapshot(identity, makeMessages('first user', 'first assistant', firstTimestamp));
+  assert.equal(secondArchive.getRawTranscript(identity).length, 1);
+
+  archiveSnapshot(identity, makeMessages('second user', 'second assistant', secondTimestamp));
+
+  const entries = secondArchive.getRawTranscript(identity, secondTimestamp);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].user, 'second user');
+  assert.equal(entries[0].timestamp, secondTimestamp);
+});

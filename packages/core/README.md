@@ -25,7 +25,7 @@ The common case stays cheap (you don't reload the whole conversation every turn)
 
 ## Memory that metabolizes
 
-Memories aren't write-once rows. They **live**: health decays over time and refreshes on access; a newer fact **supersedes** a close older one; contradictions are **flagged and deprecated** instead of silently coexisting; a nightly pass **merges** redundant memories; dead memories are cleaned up through a trash-protected path. Core categories, high-importance facts, and skill capsules are protected from decay — so the store stays relevant instead of growing into noise.
+Memories aren't write-once rows. Health decays linearly by `0.15 × elapsed hours × max(0.2, 1 − 0.01 × accessCount)` points per sweep (100 health reaches zero in about 28 days with no accesses); active non-skill v2 capsules decay at one quarter speed. Core categories (`identity`, `preference`, `constraint`, `business`, `decision`, `core_rule`), importance ≥ 0.75 except dynamic capsules, and skill capsules are excluded from decay. Retriever paths that enqueue boosts and eligible non-core skill loads raise health; `engine.recall()` searches and reranks without boosting. Conflict detection only checks `preference`, `constraint`, `identity`, and `decision` and requires a structured JSON boolean verdict. Night merge deprecates a source only after subject/cardinality compatibility checks; its separate `deprecated` decision also covers stale or redundant memories. Zero-health and expired `trashed` rows pass through JSON trash for 7 days. SSD write failures are synced from RAM after SSD recovery, and startup RAM-to-SSD sync only adds or updates rows. WAL recovery is at-least-once, not exactly-once; back up `dataDir`. Loss of the data directory and WAL together cannot be recovered by this mechanism.
 
 ## How it's built
 
@@ -36,10 +36,10 @@ Memories aren't write-once rows. They **live**: health decays over time and refr
 | Transcript + rehydrate | Verbatim turn archive with a byte-offset `.idx`; recover exact turns by entry-id, time, or keyword | `transcript/` |
 | Hybrid retrieval | Vector + full-text BM25, RRF fusion, optional local rerank (CRAG-style accept/partial/reject, tuned recall-safe), EntitySynergyMerger (NER fragment rescue), Structured-Slot dedup, causal-chain context expansion | `retrieval/retriever-v4` |
 | Knowledge graph | Triple (subject–relation–object) store with vector + FTS entity search, used to expand hook/query coverage | `store/graph-store` |
-| Memory metabolism | Health decays over time, refreshes on access; dead memories cleaned up through a trash-protected path | `lifecycle/cleanup-engine` |
+| Memory metabolism | Linear decay; selected Retriever paths and skill loads boost health; zero-health and expired trashed rows use 7-day JSON trash retention | `lifecycle/cleanup-engine` + `store/store-v4` |
 | Night consolidation | Periodic offline pass that merges and compresses related memories | `lifecycle/night-consolidation` |
 | Associative hooks | Memories can carry trigger keywords that fire related recalls; a feedback loop reweights hooks by hit quality | `cognition/hooks-engine` |
-| Causal + conflict | Newer facts supersede close older ones; contradictions are flagged and deprecated with a `supersededBy` chain | `cognition/causal-engine` + `conflict-detector` |
+| Causal + conflict | Conflict detection covers four categories and uses structured JSON verdicts; merge deprecations require subject/cardinality compatibility | `cognition/causal-engine` + `conflict-detector` |
 | Structured slots | Extracts structured params (slotKey/slotValue) at write time with a version chain; retrieval returns only the latest active per slot | `pipeline/inbox-watcher` + `retrieval/retriever-v4` |
 | Global Working Memory (GWM) | Tracks the long-conversation task; embedding drift detection nudges the agent back on topic | `cognition/global-working-memory` |
 | Skill capsules v2 | Explicitly saved procedures with progressive disclosure: a one-line index is injected, full steps load on demand | `engine` + `skills/` |
