@@ -94,3 +94,30 @@ test('export writes active memories with metadata in deterministic order', async
   assert.match(markdown, /updatedAt: "2026-06-15T10:00:00.000Z"/);
   assert.ok(markdown.indexOf('## active-a') < markdown.indexOf('## active-b'));
 });
+
+test('export includes active memories beyond LanceDB’s default ten rows', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-export-many-'));
+  const localDbPath = path.join(root, 'db');
+  const localOutputPath = path.join(root, 'memories.md');
+  try {
+    const db = await lancedb.connect(localDbPath);
+    await db.createTable('memories', Array.from({ length: 25 }, (_, index) => ({
+      id: `active-${String(index).padStart(3, '0')}`,
+      text: `Active memory ${index}`,
+      category: 'fact',
+      importance: 0.5,
+      status: 'active',
+      updatedAt: index,
+      metadata: '{}',
+    })));
+
+    const status = await runCli(['export', '--db', localDbPath, '--out', localOutputPath]);
+
+    assert.equal(status, 0);
+    const markdown = await readFile(localOutputPath, 'utf8');
+    assert.equal((markdown.match(/^## active-/gm) ?? []).length, 25);
+    assert.match(markdown, /## active-024/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

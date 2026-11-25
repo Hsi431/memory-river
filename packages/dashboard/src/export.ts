@@ -4,6 +4,17 @@ import path from 'node:path';
 import { connectDb, openRequiredTable, parseMetadata } from './shared.js';
 
 const EXCLUDED_STATUSES = new Set(['trashed', 'deprecated', 'superseded']);
+const QUERY_PAGE_SIZE = 1000;
+
+async function queryAllRows(query: any): Promise<Record<string, unknown>[]> {
+  const rows: Record<string, unknown>[] = [];
+  for (let offset = 0; ; ) {
+    const page = await (offset === 0 ? query : query.offset(offset)).limit(QUERY_PAGE_SIZE).toArray() as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < QUERY_PAGE_SIZE) return rows;
+    offset += page.length;
+  }
+}
 
 interface ExportMemory {
   id: string;
@@ -86,7 +97,7 @@ function buildMarkdown(memories: ExportMemory[]): string {
 export async function runExport(dbPath: string, outputPath: string): Promise<void> {
   const db = await connectDb(dbPath);
   const table = await openRequiredTable(db, dbPath, 'memories');
-  const rows = await table.query().toArray() as Record<string, unknown>[];
+  const rows = await queryAllRows(table.query());
   const memories = activeMemories(rows);
   const markdown = buildMarkdown(memories);
 

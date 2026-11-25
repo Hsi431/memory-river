@@ -34,6 +34,7 @@ import { setBoundedMapEntry } from './util/bounded-map.js';
 import { trimTailErrors, generateWarning, extractGoalFromMsgs, RalphState } from './cognition/ralph-core.js';
 
 import {
+  DEFAULT_CONFIG,
   type PluginConfig,
   type ContextMessage,
   type EnumerationPlan,
@@ -302,15 +303,16 @@ export class MemoryRiverEngine {
     if (!this.capsuleBridgeRef) this.capsuleBridgeRef = new CapsuleBridge(config.inboxPath);
     if (!this.gwmRef) this.gwmRef = new GlobalWorkingMemory(embedder, deps.paths.gwmStateFile, config.driftThreshold);
     if (!this.cleanupEngineRef) {
+      const cleanupEngineConfig = config.cleanupEngine ?? DEFAULT_CONFIG.cleanupEngine;
       this.cleanupEngineRef = new CleanupEngine(store, {
         enabled: config.cleanupEngine?.enabled ?? config.cleanup?.enabled ?? true,
         decayDays: config.cleanupEngine?.decayDays ?? config.cleanup?.decayDays ?? 7,
         deleteBelow: config.cleanupEngine?.deleteBelow ?? config.cleanup?.deleteBelow ?? 10,
-        coreCategories: config.cleanupEngine?.coreCategories ?? config.cleanupEngine.coreCategories,
-        coreImportanceThreshold: config.cleanupEngine?.coreImportanceThreshold ?? config.cleanupEngine.coreImportanceThreshold,
-        skillCapsuleProtection: config.cleanupEngine?.skillCapsuleProtection ?? config.cleanupEngine.skillCapsuleProtection,
-        useTrash: config.cleanupEngine?.useTrash ?? config.cleanupEngine.useTrash,
-        dryRun: config.cleanupEngine?.dryRun ?? config.cleanupEngine.dryRun,
+        coreCategories: config.cleanupEngine?.coreCategories ?? cleanupEngineConfig.coreCategories,
+        coreImportanceThreshold: config.cleanupEngine?.coreImportanceThreshold ?? cleanupEngineConfig.coreImportanceThreshold,
+        skillCapsuleProtection: config.cleanupEngine?.skillCapsuleProtection ?? cleanupEngineConfig.skillCapsuleProtection,
+        useTrash: config.cleanupEngine?.useTrash ?? cleanupEngineConfig.useTrash,
+        dryRun: config.cleanupEngine?.dryRun ?? cleanupEngineConfig.dryRun,
         trashPath: deps.paths.trashDir,
         trashRetentionDays: config.cleanupEngine?.trashRetentionDays ?? config.cleanup?.trashRetentionDays ?? 7,
         enableTrashAutoPurge: true,
@@ -346,9 +348,12 @@ export class MemoryRiverEngine {
   private nightHealthCheckIntervalId: ReturnType<typeof setInterval> | null = null;
   private nightStartupRecoveryTimerId: ReturnType<typeof setTimeout> | null = null;
   private nightConsolidatorIsRunning = false;
+  private nightConsolidatorRecoveryStartedAt: number | null = null;
+  private nightConsolidatorRunStartedAt: number | null = null;
   private lastNightConsolidatorSuccessfulRunAt = 0;
   private cleanupTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private cleanupScheduleGeneration = 0;
+  private cleanupScheduledRunStartedAt: number | null = null;
   private lastCleanupSuccessfulRunAt = 0;
   private activePluginConfig!: PluginConfig;
 
@@ -847,6 +852,11 @@ export class MemoryRiverEngine {
   source: NightRecoverySource = 'scheduled_timer',
 ): Promise<void> {
   if (!this.nightConsolidatorRef) return;
+  if (this.nightConsolidatorRunStartedAt !== null) {
+    const runningForMs = Date.now() - this.nightConsolidatorRunStartedAt;
+    console.warn(`[NightConsolidator] run skipped: another consolidation is still in progress, source=${source}, runningFor=${runningForMs} ms`);
+    return;
+  }
   const now = Date.now();
   if (this.lastNightConsolidatorSuccessfulRunAt > 0 && now - this.lastNightConsolidatorSuccessfulRunAt > 48 * 60 * 60 * 1000) {
     console.warn(
@@ -854,15 +864,16 @@ export class MemoryRiverEngine {
     );
   }
   const startedAt = Date.now();
-  this.recordNightConsolidationStat({
-    runId,
-    phase: 'run_started',
-    ts: startedAt,
-    scheduledFor: scheduledFor ?? null,
-    metadata: buildNightRecoveryMetadata({ source }),
-  });
-  console.log('[NightConsolidator] run started');
+  this.nightConsolidatorRunStartedAt = startedAt;
   try {
+    this.recordNightConsolidationStat({
+      runId,
+      phase: 'run_started',
+      ts: startedAt,
+      scheduledFor: scheduledFor ?? null,
+      metadata: buildNightRecoveryMetadata({ source }),
+    });
+    console.log('[NightConsolidator] run started');
     const result = await this.nightConsolidatorRef.consolidateRange('last24h', runId, source);
     this.lastNightConsolidatorSuccessfulRunAt = Date.now();
     this.recordNightConsolidationStat({
@@ -896,6 +907,8 @@ export class MemoryRiverEngine {
     if (err?.stack) {
       console.error(err.stack);
     }
+  } finally {
+    this.nightConsolidatorRunStartedAt = null;
   }
 }
 
@@ -909,6 +922,7 @@ export class MemoryRiverEngine {
     isRunning: () => this.nightConsolidatorIsRunning,
     setRunning: (running) => {
       this.nightConsolidatorIsRunning = running;
+      this.nightConsolidatorRecoveryStartedAt = running ? Date.now() : null;
     },
     getLastSuccessfulRunTs: () => this.getLastSuccessfulNightRunTs(),
     recordStat: (stat) => this.recordNightConsolidationStat(stat),
@@ -942,6 +956,8 @@ export class MemoryRiverEngine {
     });
     console.log(`[NightConsolidator] timer scheduled, fires at ${new Date(scheduledFor).toISOString()} (${msUntilRun} ms)`);
     this.nightTimerId = setTimeout(async () => {
+      this.nightTimerId = null;
+      scheduleNextRun();
       const firedAt = Date.now();
       this.recordNightConsolidationStat({
         runId: scheduledRunId,
@@ -952,12 +968,16 @@ export class MemoryRiverEngine {
         metadata: buildNightRecoveryMetadata({ source: 'scheduled_timer' }),
       });
       console.log(`[NightConsolidator] timer fired at ${new Date().toISOString()}`);
+      const previousRunStartedAt = this.nightConsolidatorRunStartedAt ?? this.nightConsolidatorRecoveryStartedAt;
+      if (this.nightConsolidatorIsRunning || previousRunStartedAt !== null) {
+        const runningForMs = previousRunStartedAt === null ? 0 : Date.now() - previousRunStartedAt;
+        console.warn(`[NightConsolidator] scheduled run skipped: another consolidation is still in progress, runningFor=${runningForMs} ms`);
+        return;
+      }
       try {
         await this.tryRunNightConsolidator('scheduled_timer', scheduledRunId, scheduledFor);
       } catch (err: any) {
         console.warn('[NightConsolidator] scheduled run failed:', err?.message ?? err);
-      } finally {
-        scheduleNextRun();
       }
     }, msUntilRun);
     this.nightTimerId.unref?.();
@@ -1101,11 +1121,19 @@ export class MemoryRiverEngine {
     const msUntilRun = scheduledFor - Date.now();
     console.log(`[CleanupEngine] timer scheduled, fires at ${new Date(scheduledFor).toISOString()} (${msUntilRun} ms)`);
     this.cleanupTimeoutId = setTimeout(async () => {
+      this.cleanupTimeoutId = null;
+      scheduleNextRun();
       console.log(`[CleanupEngine] timer fired at ${new Date().toISOString()}, source=daily-schedule`);
+      if (this.cleanupScheduledRunStartedAt !== null) {
+        const runningForMs = Date.now() - this.cleanupScheduledRunStartedAt;
+        console.warn(`[CleanupEngine] scheduled run skipped: another cleanup is still in progress, runningFor=${runningForMs} ms`);
+        return;
+      }
+      this.cleanupScheduledRunStartedAt = Date.now();
       try {
         await this.runCleanupEngineNow('daily-schedule');
       } finally {
-        scheduleNextRun();
+        this.cleanupScheduledRunStartedAt = null;
       }
     }, msUntilRun);
   };

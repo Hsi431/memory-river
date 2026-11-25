@@ -121,6 +121,10 @@ function boundedNumberOrDefault(
   return Math.min(maximum, Math.max(minimum, numberOrDefault(value, fallback)));
 }
 
+function isValidSessionKey(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]+$/.test(value) && !value.includes('..');
+}
+
 function sessionFromBody(body: Record<string, unknown>, sessionKey: string): SessionHint {
   if (body.session !== null && typeof body.session === 'object' && !Array.isArray(body.session)) {
     return body.session as SessionHint;
@@ -218,6 +222,10 @@ async function routeRequest(
     }
 
     if (path === '/rehydrate') {
+      if (body.sessionKey !== undefined && !isValidSessionKey(body.sessionKey)) {
+        sendError(response, 400, 'invalid sessionKey');
+        return;
+      }
       const requestBody: RehydrateRequest = {
         mode: 'entry_ids',
         sessionKey: typeof body.sessionKey === 'string' ? body.sessionKey : options.sessionKey,
@@ -232,8 +240,20 @@ async function routeRequest(
     }
 
     if (path === '/archive-transcript') {
+      if (body.sessionKey !== undefined && !isValidSessionKey(body.sessionKey)) {
+        sendError(response, 400, 'invalid sessionKey');
+        return;
+      }
       const session = sessionFromBody(body, options.sessionKey);
+      if (session.sessionKey !== undefined && !isValidSessionKey(session.sessionKey)) {
+        sendError(response, 400, 'invalid sessionKey');
+        return;
+      }
       const messages = Array.isArray(body.messages) ? body.messages as ContextMessage[] : [];
+      if (messages.some(message => message?.role !== 'user' && message?.role !== 'assistant')) {
+        sendError(response, 400, 'archive messages must have user or assistant roles');
+        return;
+      }
       const result = await options.river.archiveTranscript(session, messages);
       sendJson(response, 200, result);
       return;

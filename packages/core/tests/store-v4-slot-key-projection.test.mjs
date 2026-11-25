@@ -36,3 +36,37 @@ test('getById(includeAllStatus) returns the persisted slotKey', async () => {
     }
   }
 });
+
+test('searchBySlotKey returns every version beyond its former hundred-row cap', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-river-slot-key-many-'));
+  const store = new MemoryStore(path.join(root, 'ssd'), path.join(root, 'ram'), 4);
+  const ids = [];
+
+  try {
+    for (let index = 0; index < 101; index++) {
+      const entry = await store.store({
+        text: `slot version ${index}`,
+        vector: [0.1, 0.2, 0.3, 0.4],
+        importance: 0.8,
+        category: 'preference',
+        parentId: null,
+        metadata: '{}',
+        slotKey: 'person:favorite_team',
+        slotValue: `team-${index}`,
+      });
+      ids.push(entry.id);
+    }
+
+    const results = await store.searchBySlotKey('person:favorite_team');
+
+    assert.equal(results.length, 101);
+    assert.deepEqual(new Set(results.map(entry => entry.id)), new Set(ids));
+  } finally {
+    await store.shutdown();
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      console.warn(`[test-teardown] best-effort rm failed for ${root}:`, error?.code ?? error);
+    }
+  }
+});

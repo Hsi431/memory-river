@@ -219,6 +219,8 @@ bash scripts/ci-local.sh   # CI 跑的東西:模擬乾淨檢出 → build → ty
 | 4 · 單跳 | 76.7% |
 | **整體(cat 1–4)** | **67.3%** |
 
+67.3% 是用來做回歸檢查的結果，不代表產品品質。現行 `answer_accuracy` 只計入 judge 成功解析的題目；解析失敗會獨立統計，因此不能直接和把解析失敗算錯的舊數字比較。
+
 *cat5 是對抗類別 —— 「標準答案」是誘答,正解為拒答/糾正,故比照 mem0 的協定不併入 headline,獨立列為穩健性軸(本次 run 在嚴格 judge 下是 22.0%;先前報的「拒答準確率」口徑尚未用現行 judge 重測)。*
 
 **跟上一版公開數字的差別。** 上表**不能**跟我們先前公布的 60.6% 相減,而且差距也不全是進步。有兩件事同時改變:
@@ -257,7 +259,7 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 
 為了對照,我們也曾在**完全相同的那批生成答案**上,另外報一個 mem0 式的 LLM-as-judge 分數。這不動 agent、不動檢索到的 context、不動模型輸出 —— 只換 judge rubric,而光是 rubric 就能把分數拉動很大:在先前那次 run,同一批 cat1 答案在嚴格的不給部分分 judge 下是 **34.8%**,在 mem0 式 rubric 下變 **84.8%**。這就是為什麼 LoCoMo 數字不附完整評測協定就不該被拿來比。
 
-在 mem0 式 rubric 下(rubric prompt 從 `mem0ai/memory-benchmarks` 逐字複製),Memory River 的 cat1–4 在**先前那次以 Gemini 評分的 run** 達 **79.9%**；當時的口徑把 17 題 judge parse failure 算錯(共 1,539 題)。現行計分會把 parse failure 分開統計。**換 judge 與檢索修正之後,那一輪 rubric 評分尚未重跑,所以我們不把它當成現行數字重述。** 我們把它當「跟公開數字可對照」的比較值,不是主要的工程分數 —— 主數字仍是那個較嚴的端到端分數。
+在 mem0 式 rubric 下(rubric prompt 從 `mem0ai/memory-benchmarks` 逐字複製),Memory River 的 cat1–4 在**先前那次以 Gemini 評分的 run** 達 **79.9%**；當時的口徑把 17 題 judge parse failure 算錯(共 1,539 題)。現行計分會把 parse failure 分開統計。**換 judge 與檢索修正之後,那一輪 rubric 評分尚未重跑,所以我們不把它當成現行數字重述。** 79.9% 只適合作為回歸檢查參考,不代表產品品質；解析失敗的計分口徑與現行 `answer_accuracy` 不同,不能直接比較。
 
 重點不是表演排行榜的把戲,而是把取捨攤開來看:
 
@@ -285,6 +287,7 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 ## 🔒 安全
 
 - **只綁 loopback。** `mr-serve` 只綁 `127.0.0.1`、沒有身分驗證 —— 給信任的本機 client 用。不要把它 reverse-proxy 到網路上。
+- **威脅模型。** 服務假設跑在單一使用者的機器上。同機的其他程式或作業系統使用者可呼叫 loopback API,也能直接讀寫記憶檔案。要開放給區域網路前,必須先加認證。
 - **預設全本地。** embedding 在你機器上跑(Ollama);記憶內容只有在你*選擇*雲端蒸餾 LLM 時才會離開機器(那些文字會送到該供應商 —— 不能接受就在 `mr init` 選 `skip`)。
 - **輸入驗證。** session key 先驗證才拿去組檔案路徑;onboarding config 以 mode `0600` 寫入。
 - **LLM 輸出驗證。** 夜間整併的 LLM 決策逐欄 runtime 檢查(action、目標 id、信心值範圍);格式不合的一律跳過並記 log,絕不套用。
@@ -337,10 +340,10 @@ LoCoMo 分數對評測協定極度敏感。公開數字常常把好幾個變因�
 模擬 retrieval-induced forgetting:只對 `preference`/`constraint`/`identity`/`decision` 觸發,寫入後掃同類相似記憶;LLM 必須回傳含布林值 `conflict` 的結構化 JSON,才會依判定將舊記憶標 deprecated 並記 `supersededBy`。格式錯誤或判定失敗時預設共存。`cognition/conflict-detector`
 
 ### 🎯 Structured Slot — _精確參數不靠人記_
-寫入時自動抽結構化參數(例:「SSH port 改成 2222」→ `slotKey=technical:ssh_port, slotValue=2222`),信心夠才寫入、不夠降級為自由文本。同 slotKey 有版本鏈,舊值標 deprecated、新值 active;檢索時同 slot 只回最新 active,不會新舊並陳。`pipeline/inbox-watcher` + `retrieval/retriever-v4`
+寫入時嘗試抽結構化參數(例:「SSH port 改成 2222」→ `slotKey=technical:ssh_port, slotValue=2222`)。只有抽出 slot 且 confidence ≥ 0.5 才會走 slot 改值；一般文字更新若沒抽出 slot(例如「5000 改 6000」)仍可能被當成重複。成功改值時同 slotKey 會保留版本鏈:舊值標 deprecated、新值 active;檢索只回每個 slot 最新的 active 值。`pipeline/inbox-watcher` + `retrieval/retriever-v4`
 
 ### 🎣 Hooks Engine — _觸景生情的聯想網路_
-不是關鍵字匹配,是 LLM 生成的**概念觸發器**(好鉤子:「報告撰寫規範」;爛鉤子:「報告」)。三級權重,有**品質回饋閉環**:鉤子觸發 → CRAG 審核結果回報 → 動態調權,長期低效的鉤子自動淘汰。`cognition/hooks-engine`
+不是關鍵字匹配,是 LLM 生成的**概念觸發器**(好鉤子:「報告撰寫規範」;爛鉤子:「報告」)。三級權重,有**品質回饋閉環**:鉤子觸發 → CRAG 審核結果回報 → 動態調權,長期低效的鉤子自動淘汰。依目前預設門檻,low 權重 hook 不會觸發:權重 0.4 低於觸發門檻 0.5。`cognition/hooks-engine`
 
 ### 🌀 Global Working Memory (GWM) — _短期目標不漂移_
 追蹤長對話的主任務目標,每輪用 embedding cosine 偵測主題漂移,偏題時注入提醒把 agent 拉回正軌;有注入控制防每輪重複、狀態持久化重啟可復原。工具面:`gwm_on/off/status/update`。`cognition/global-working-memory`

@@ -19,6 +19,7 @@ import {
 } from './locomo-provenance.js';
 import { deepseekApiKey } from './provider-keys.js';
 import { createRealMemoryRiver } from './real-river.js';
+import type { ToolCompletion } from './tool-llm.js';
 
 type CoverageBucket = 'full' | 'partial' | 'zero';
 type ContextChannel = 'autoRecall' | 'memory_recall' | 'memory_rehydrate';
@@ -224,6 +225,17 @@ function loadCat1GoldItems(): Cat1GoldItemsFixture {
   return cachedGoldItems;
 }
 
+interface DeliveredContextDependencies {
+  deepseekApiKey: typeof deepseekApiKey;
+  geminiJudgeAvailable: typeof geminiJudgeAvailable;
+  loadLocomo: typeof loadLocomo;
+  findSnapshotPath: typeof findSnapshotPath;
+  createRealMemoryRiver: typeof createRealMemoryRiver;
+  createGeminiJudge: typeof createGeminiJudge;
+  loadCat1GoldItems: typeof loadCat1GoldItems;
+  complete?: ToolCompletion;
+}
+
 function cat1GoldAtomsForQuestion(
   fixture: Cat1GoldItemsFixture,
   sampleId: string,
@@ -253,7 +265,15 @@ export function measureAtomRecallInContext(
   sampleId: string,
   questionIndex: number,
 ): { hits: string[]; measured: number; total: number; recall: number } {
-  const fixture = loadCat1GoldItems();
+  return measureAtomRecallInContextWithFixture(contextText, sampleId, questionIndex, loadCat1GoldItems());
+}
+
+function measureAtomRecallInContextWithFixture(
+  contextText: string,
+  sampleId: string,
+  questionIndex: number,
+  fixture: Cat1GoldItemsFixture,
+): { hits: string[]; measured: number; total: number; recall: number } {
   const atoms = cat1GoldAtomsForQuestion(fixture, sampleId, questionIndex);
   const context = normalizeAtomText(contextText);
   const hits: string[] = [];
@@ -564,19 +584,36 @@ function joinContext(chunks: string[]): string {
 
 export async function runLocomoDeliveredContext(
   options: DeliveredContextOptions,
+  dependencies: Partial<DeliveredContextDependencies> = {},
 ): Promise<DeliveredContextResult> {
-  if (!deepseekApiKey()) throw new Error('DEEPSEEK_API_KEY is required for the Otter answer path');
-  if (!geminiJudgeAvailable()) throw new Error('GEMINI_API_KEY is required for judge correctness');
+  const runtime: DeliveredContextDependencies = {
+    deepseekApiKey,
+    geminiJudgeAvailable,
+    loadLocomo,
+    findSnapshotPath,
+    createRealMemoryRiver,
+    createGeminiJudge,
+    loadCat1GoldItems,
+    ...dependencies,
+  };
+  if (!runtime.deepseekApiKey()) throw new Error('DEEPSEEK_API_KEY is required for the Otter answer path');
+  if (!runtime.geminiJudgeAvailable()) throw new Error('GEMINI_API_KEY is required for judge correctness');
 
-  const conversation = loadLocomo().find(item => item.sampleId === options.conversation);
+  const conversation = runtime.loadLocomo().find(item => item.sampleId === options.conversation);
   if (!conversation) throw new Error(`conversation not found: ${options.conversation}`);
-  const snapshotPath = findSnapshotPath(options.snapshotDir!, conversation);
+  const fixture = runtime.loadCat1GoldItems();
+  if (fixture.sampleId !== conversation.sampleId) {
+    throw new Error(
+      `LoCoMo gold-items fixture for ${fixture.sampleId} does not match conversation ${conversation.sampleId}`,
+    );
+  }
+  const snapshotPath = runtime.findSnapshotPath(options.snapshotDir!, conversation);
   if (!snapshotPath) {
     throw new Error(`${conversation.sampleId}: no restored snapshot found in ${options.snapshotDir}`);
   }
 
-  const real = await createRealMemoryRiver(undefined, snapshotPath);
-  const judge = createGeminiJudge();
+  const real = await runtime.createRealMemoryRiver(undefined, snapshotPath);
+  const judge = runtime.createGeminiJudge();
   const warnings: string[] = [];
   try {
     const convKey = `locomo-${conversation.sampleId}`;
@@ -619,6 +656,7 @@ export async function runLocomoDeliveredContext(
         rehydrateById,
         deliveredContext,
         extraAutoRecallContext,
+        complete: runtime.complete,
       });
       const gradePromise = resultPromise.then(result => gradeLocomoAnswer(judge, {
         question: qa.question,
@@ -627,8 +665,18 @@ export async function runLocomoDeliveredContext(
         category: String(qa.category),
         sourceIndex: qa.sourceIndex,
       }, result.answer));
-      const result = await resultPromise;
-      const grade = await gradePromise;
+      const [resultOutcome, gradeOutcome] = await Promise.allSettled([resultPromise, gradePromise]);
+      if (resultOutcome.status === 'rejected') {
+        const reason = resultOutcome.reason;
+        warnings.push(
+          `${conversation.sampleId} q${questionIndex}: answer failed: ` +
+          `${reason instanceof Error ? reason.message : String(reason)}`,
+        );
+        continue;
+      }
+      if (gradeOutcome.status === 'rejected') throw gradeOutcome.reason;
+      const result = resultOutcome.value;
+      const grade = gradeOutcome.value;
 
       const goldEntryIds = goldEntryIdsForQuestion(conversation, snapshotPath, qa.evidence);
       if (goldEntryIds.length === 0) {
@@ -652,20 +700,23 @@ export async function runLocomoDeliveredContext(
         ...deliveredTextChunks.memory_rehydrate,
       ]);
       const rehydrateOnlyText = joinContext(deliveredTextChunks.memory_rehydrate);
-      const atomRecallOnly = measureAtomRecallInContext(
+      const atomRecallOnly = measureAtomRecallInContextWithFixture(
         recallOnlyText,
         conversation.sampleId,
         questionIndex,
+        fixture,
       );
-      const atomAll = measureAtomRecallInContext(
+      const atomAll = measureAtomRecallInContextWithFixture(
         allText,
         conversation.sampleId,
         questionIndex,
+        fixture,
       );
-      const atomRehydrateOnly = measureAtomRecallInContext(
+      const atomRehydrateOnly = measureAtomRecallInContextWithFixture(
         rehydrateOnlyText,
         conversation.sampleId,
         questionIndex,
+        fixture,
       );
 
       // Axis 1 (position decile) + Axis 2 (utilization) + cross-tab.
@@ -675,7 +726,6 @@ export async function runLocomoDeliveredContext(
       // which is the context the answerer saw minus the SYSTEM_PROMPT preamble (which contains
       // no gold atoms). normalizeAtomText lowercases and collapses whitespace identically to
       // how measureAtomRecallInContext normalises before calling boundedIncludes.
-      const fixture = loadCat1GoldItems();
       const allAtoms = cat1GoldAtomsForQuestion(fixture, conversation.sampleId, questionIndex);
       const contextNormalized = normalizeAtomText(allText);
       const answerNormalized = normalizeAtomText(result.answer);

@@ -83,6 +83,8 @@ const STATUS_AUDIT_LOG_TABLE = "status_audit_log";
 const TRANSCRIPT_WATERMARK_TABLE = "transcript_watermark";
 const SSD_FAILURE_THRESHOLD = 5;
 const DEFAULT_SSD_RECOVERY_PROBE_INTERVAL_MS = 60_000;
+const MAX_SSD_SYNC_ROUNDS = 3;
+const LANCE_QUERY_PAGE_SIZE = 1000;
 const VISIBILITY_OVERFETCH = 20;
 const POOL_VECTOR_WEIGHT = 0.5;
 const POOL_BM25_WEIGHT = 0.5;
@@ -90,6 +92,18 @@ const POOL_BM25_WEIGHT = 0.5;
 // 「只有 BM25 命中」的候選就永遠排在整個向量池之後、被 slice 砍光,字面通道等於不存在。
 // 池子的任務是別餓死任何一路,加權是排序那一層的事。
 const verifiedFtsLabels = new Set<string>();
+
+async function queryAllRows(query: any): Promise<any[]> {
+  const rows: any[] = [];
+  for (let offset = 0; ; ) {
+    const page = await (offset === 0 ? query : query.offset(offset))
+      .limit(LANCE_QUERY_PAGE_SIZE)
+      .toArray();
+    rows.push(...page);
+    if (page.length < LANCE_QUERY_PAGE_SIZE) return rows;
+    offset += page.length;
+  }
+}
 
 export class SchemaViolationError extends Error {
   constructor(
@@ -1098,9 +1112,9 @@ export class MemoryStore {
   private async syncSsdFromRam(): Promise<void> {
     if (this.ssdFallback || !this.ramTable || !this.ssdTable) return;
 
-    while (true) {
+    for (let round = 0; round < MAX_SSD_SYNC_ROUNDS; round++) {
       const version = this.ramMemoryWriteVersion;
-      const ramRows = await this.ramTable.query().toArray();
+      const ramRows = await queryAllRows(this.ramTable.query());
 
       // Additive only: a partial RAM copy must never be able to wipe rows from the SSD backup.
       // Deletes are replayed only for ids this process removed from RAM while SSD was behind.
@@ -1127,6 +1141,9 @@ export class MemoryStore {
         return;
       }
     }
+
+    this.ssdNeedsSync = true;
+    console.warn(`[MemoryStore] SSD sync did not converge after ${MAX_SSD_SYNC_ROUNDS} rounds; keeping sync pending for the next trigger`);
   }
 
   private stopSsdRecoveryProbe(): void {
@@ -2881,7 +2898,7 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
 
   async queryHookBearing(): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
-    const results = await this.ramTable.query()
+    const query = this.ramTable.query()
       .where("`hasHooks` = true")
       .select([
         "id",
@@ -2894,8 +2911,8 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
         "createdAt",
         "updatedAt",
         "status",
-      ])
-      .toArray();
+      ]);
+    const results = await queryAllRows(query);
 
     return results.map((row: any) => ({
       id: row.id as string,
@@ -2990,10 +3007,8 @@ async store(entry: StoreEntryInput): Promise<MemoryEntry> {
     if (!slotKey) return [];
 
     const escaped = `'${slotKey.replace(/'/g, "''")}'`;
-    const results = await this.ramTable.query()
-      .where(`\`slotKey\` = ${escaped}`)
-      .limit(100)
-      .toArray();
+    const results = await queryAllRows(this.ramTable.query()
+      .where(`\`slotKey\` = ${escaped}`));
 
     return results.map((row: any) => ({
       id: row.id as string,

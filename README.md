@@ -219,6 +219,8 @@ LoCoMo is the standard long-conversation memory benchmark. We report it the way 
 | 4 · single-hop | 76.7% |
 | **Overall (cat 1–4)** | **67.3%** |
 
+The 67.3% figure is a regression-check result, not a measure of product quality. Current `answer_accuracy` counts only questions with a valid parsed judge result; judge parse failures are reported separately, so it cannot be directly compared with older figures that counted them as wrong.
+
 *Category 5 is adversarial — the "gold" answer is a lure and the correct behaviour is to refuse or correct, so like mem0's protocol we exclude it from the headline and treat it as a separate robustness axis (22.0% under the strict judge on this run; the abstention-accuracy framing reported previously has not been re-measured under the current judge).*
 
 **What changed since the previous published numbers.** The table above is not comparable to the 60.6% we published before, and the difference is not all progress. Two things moved at once:
@@ -257,7 +259,7 @@ This is intentionally stricter than the common leaderboard-style setup. It measu
 
 We have also reported a mem0-style LLM-as-judge score on the exact same generated answers. This does not change the agent, the retrieved context, or the model output — only the judge rubric changes, and the rubric alone can move the score dramatically: on the earlier run, the same cat1 answers scored **34.8%** under the strict no-partial-credit judge and **84.8%** under the mem0-style rubric. This is why LoCoMo numbers should not be compared without the full evaluation protocol.
 
-Under the mem0-style rubric (the prompt is copied verbatim from `mem0ai/memory-benchmarks`), Memory River reached **79.9%** on cat1–4 on the earlier Gemini-judged run. That historical scoring counted all 17 judge parse failures as wrong (17 of 1,539); current reporting separates parse failures. **That rubric pass has not been re-run since the judge and the retrieval fix changed, so we are not restating it as a current number.** We treat it as a public-compatible comparison figure, not the primary engineering score — the primary number remains the stricter end-to-end score.
+Under the mem0-style rubric (the prompt is copied verbatim from `mem0ai/memory-benchmarks`), Memory River reached **79.9%** on cat1–4 on the earlier Gemini-judged run. That historical scoring counted all 17 judge parse failures as wrong (17 of 1,539); current reporting separates parse failures. **That rubric pass has not been re-run since the judge and the retrieval fix changed, so we are not restating it as a current number.** Treat 79.9% as a regression-check reference, not a claim about product quality; its parse-failure handling differs from current `answer_accuracy`, so the numbers are not directly comparable.
 
 The point isn't a leaderboard trick — it's to make the tradeoff visible:
 
@@ -285,6 +287,7 @@ What's actually guaranteed, and what isn't — read this before trusting it with
 ## 🔒 Security
 
 - **Loopback only.** `mr-serve` binds `127.0.0.1` exclusively and has no authentication — it is for trusted local clients. Don't reverse-proxy it onto a network.
+- **Threat model.** The service assumes a single-user machine. Other local programs or OS users on the same machine can call the loopback API and directly read or change the memory files. Add authentication before exposing the service to a LAN.
 - **Local by default.** Embeddings run on your machine via Ollama; memory content leaves the machine only if you *choose* a cloud LLM for distillation (that text goes to that provider — pick `skip` at `mr init` if that's unacceptable).
 - **Validated inputs.** Session keys are validated before any file path is derived from them; the onboarding config is written with mode `0600`.
 - **Validated LLM output.** Night-consolidation decisions produced by the LLM are runtime-checked field by field (action, target ids, confidence bounds); anything malformed is skipped and logged, never applied.
@@ -337,10 +340,10 @@ On write, it classifies a new memory's relation to existing ones: `UPDATE` (clos
 Modeled on retrieval-induced forgetting: it only fires for `preference` / `constraint` / `identity` / `decision`, scans similar same-category memories after a write, and accepts a structured JSON object with boolean `conflict` from the LLM → the conflicting memory is deprecated with a `supersededBy` chain. Invalid output or a failed judgment defaults to coexistence. `cognition/conflict-detector`
 
 ### 🎯 Structured Slot — _exact params you don't have to remember_
-On write it auto-extracts structured params (e.g. "change the SSH port to 2222" → `slotKey=technical:ssh_port, slotValue=2222`), gated on confidence (low confidence degrades to free text). Each slotKey keeps a version chain — old value deprecated, new value active — and retrieval returns only the latest active per slot, so stale and fresh values never appear side by side. `pipeline/inbox-watcher` + `retrieval/retriever-v4`
+On write it tries to extract structured params (e.g. "change the SSH port to 2222" → `slotKey=technical:ssh_port, slotValue=2222`). Only an extracted slot with confidence ≥ 0.5 is routed as a slot update; a plain-text change without a slot (for example, "change 5000 to 6000") can still be treated as a duplicate. Accepted updates keep a version chain — old value deprecated, new value active — and retrieval returns only the latest active value per slot. `pipeline/inbox-watcher` + `retrieval/retriever-v4`
 
 ### 🎣 Hooks Engine — _an associative net, reminded by context_
-Not keyword matching — LLM-generated **concept triggers** (good hook: "report writing spec"; bad hook: "report"). Three weight tiers, with a **quality feedback loop**: a hook fires → the CRAG outcome is reported back → its weight is adjusted, and hooks that stay ineffective are pruned. Associations that help get strengthened; ones that mislead get weakened — fire together, wire together. `cognition/hooks-engine`
+Not keyword matching — LLM-generated **concept triggers** (good hook: "report writing spec"; bad hook: "report"). Three weight tiers, with a **quality feedback loop**: a hook fires → the CRAG outcome is reported back → its weight is adjusted, and hooks that stay ineffective are pruned. Low-weight hooks currently do not trigger under the default floor: their score is 0.4, below the 0.5 trigger threshold. `cognition/hooks-engine`
 
 ### 🌀 Global Working Memory (GWM) — _short-term goal that doesn't drift_
 Tracks the long conversation's main goal and detects topic drift each turn via embedding cosine, injecting a nudge to pull the agent back when it wanders; injection control prevents per-turn repetition and the state persists across restarts. Tools: `gwm_on/off/status/update`. `cognition/global-working-memory`

@@ -37,12 +37,19 @@ function parseEmbedding(answer: string, defaults: OnboardingConfig['embedding'])
     const providerDefaults = defaultOnboardingConfig().embedding;
     const model = parts.join(' ') || (provider === defaults.provider ? defaults.model : providerDefaults.model);
     const base = provider === defaults.provider && model === defaults.model ? defaults : providerDefaults;
-    return { ...base, provider, model };
+    return {
+      ...base,
+      provider,
+      model,
+      ...(provider === defaults.provider && defaults.baseUrl ? { baseUrl: defaults.baseUrl } : {}),
+    };
   }
   if (provider === 'openai' && parts.length >= 2) {
     const [baseUrl, model, apiKey] = parts;
     const providerDefaults = defaultOnboardingConfig().embedding;
-    const base = provider === defaults.provider && model === defaults.model ? defaults : providerDefaults;
+    const base = provider === defaults.provider && model === defaults.model && baseUrl === defaults.baseUrl
+      ? defaults
+      : providerDefaults;
     return { ...base, provider, baseUrl, model, ...(apiKey ? { apiKey } : {}) };
   }
   throw new Error(INIT_TEXT.embeddingError);

@@ -2,7 +2,7 @@
 
 Claude Code plugin that connects local `mr-serve` to Claude Code hooks.
 
-- `UserPromptSubmit` calls `/recall` and injects long-term memory as additional context.
+- By default, `UserPromptSubmit` calls `/recall` and injects long-term memory through Claude Code's `additionalContext` field.
 - `SessionEnd` parses the Claude Code transcript JSONL and posts user/assistant text to `/archive-transcript`.
 
 The hooks are fail-open: daemon errors, timeouts, bad input, and cache failures exit `0` without writing hook-breaking output.
@@ -19,7 +19,7 @@ packages/claude-code-plugin/
 
 Set `MEMORY_RIVER_URL` to override the default `http://127.0.0.1:4791`.
 
-Set `MEMORY_RIVER_RECALL=off` to disable recall injection while keeping `SessionEnd` archiving.
+Recall injection is enabled by default. Set `MEMORY_RIVER_RECALL=off` to disable it while keeping `SessionEnd` archiving; only the exact value `off` disables recall.
 
 ## Install (local marketplace)
 

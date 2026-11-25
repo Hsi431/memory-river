@@ -68,6 +68,33 @@ test('並行的兩次清理只會真的跑一次(daily-schedule 撞 session-end)
   assert.equal(secondResult.skipped, true, '第二次必須回報 skipped');
 });
 
+test('session-end entry skips decay while another cleanup is running', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-cleanup-session-end-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const gated = makeGatedStore();
+  const engine = new CleanupEngine(gated.store, {
+    enabled: true,
+    decayDays: 7,
+    deleteBelow: 10,
+    trashPath: path.join(root, 'trash'),
+    useTrash: false,
+    enableTrashAutoPurge: false,
+  });
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => { console.warn = originalWarn; });
+
+  const first = engine.runSmartCleanup('daily-schedule');
+  engine.onSessionEnd('session-2', []);
+  await Promise.resolve();
+
+  assert.equal(gated.calls, 1, 'session-end must reuse the cleanup in-flight lock');
+  assert.match(warnings.join('\n'), /run skipped.*session-end/);
+  gated.release();
+  await first;
+});
+
 test('前一次跑完之後,下一次清理可以正常進行', async () => {
   const gated = makeGatedStore();
   const engine = makeEngine(gated.store);

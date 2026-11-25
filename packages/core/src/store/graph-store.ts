@@ -17,6 +17,17 @@ import { recordAuxTableWrite } from "./aux-table-maintenance.js";
 const GRAPH_TABLE_NAME = "graph_triples";
 const SSD_FAILURE_THRESHOLD = 5;
 const DEFAULT_SSD_RECOVERY_PROBE_INTERVAL_MS = 60_000;
+const QUERY_PAGE_SIZE = 1000;
+
+async function queryAllRows(query: any): Promise<any[]> {
+  const rows: any[] = [];
+  for (let offset = 0; ; ) {
+    const page = await (offset === 0 ? query : query.offset(offset)).limit(QUERY_PAGE_SIZE).toArray();
+    rows.push(...page);
+    if (page.length < QUERY_PAGE_SIZE) return rows;
+    offset += page.length;
+  }
+}
 
 export interface Triple {
   subject: string;
@@ -467,11 +478,9 @@ export class GraphStore {
     if (!memoryId) return [];
 
     try {
-      const results = await this.ramTable
+      const results = await queryAllRows(this.ramTable
         .query()
-        .where(`\`sourceMemoryId\` = '${memoryId.replace(/'/g, "''")}'`)
-        .limit(100)
-        .toArray();
+        .where(`\`sourceMemoryId\` = '${memoryId.replace(/'/g, "''")}'`));
 
       return results
         .filter((row: any) => !row.id.startsWith("init_"))

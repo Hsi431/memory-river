@@ -338,6 +338,88 @@ test('memories, graph, and slots endpoints return stable pages', async () => {
   }
 });
 
+test('memories endpoint pages from all matching rows beyond LanceDB’s default ten', async () => {
+  const dbRoot = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-many-memories-'));
+  try {
+    const db = await lancedb.connect(dbRoot);
+    await db.createTable('memories', Array.from({ length: 25 }, (_, index) => ({
+      id: `memory-${String(index).padStart(3, '0')}`,
+      text: `Memory ${index}`,
+      category: 'fact',
+      importance: 1,
+      confidence: 1,
+      status: 'active',
+      slotKey: `slot-${index}`,
+      slotValue: String(index),
+      sessionId: '',
+      parentId: '',
+      createdAt: index,
+      updatedAt: index,
+      metadata: '{}',
+    })));
+
+    const response = await handleDashboardRequest(dbRoot, 'GET', '/api/memories?limit=25&offset=0');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 25);
+    assert.equal(response.body.items.length, 25);
+  } finally {
+    await rm(dbRoot, { recursive: true, force: true });
+  }
+});
+
+test('graph endpoint pages from all matching rows beyond LanceDB’s default ten', async () => {
+  const dbRoot = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-many-graph-'));
+  try {
+    const db = await lancedb.connect(dbRoot);
+    await db.createTable('graph_triples', Array.from({ length: 25 }, (_, index) => ({
+      subject: `Subject ${String(index).padStart(3, '0')}`,
+      relation: 'relates_to',
+      object: `Object ${index}`,
+      sourceMemoryId: `memory-${index}`,
+      createdAt: index,
+    })));
+
+    const response = await handleDashboardRequest(dbRoot, 'GET', '/api/graph?limit=25&offset=0');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 25);
+    assert.equal(response.body.items.length, 25);
+  } finally {
+    await rm(dbRoot, { recursive: true, force: true });
+  }
+});
+
+test('slots endpoint pages from all matching rows beyond LanceDB’s default ten', async () => {
+  const dbRoot = await mkdtemp(path.join(tmpdir(), 'mr-dashboard-many-slots-'));
+  try {
+    const db = await lancedb.connect(dbRoot);
+    await db.createTable('memories', Array.from({ length: 25 }, (_, index) => ({
+      id: `memory-${String(index).padStart(3, '0')}`,
+      text: `Memory ${index}`,
+      category: 'fact',
+      importance: 1,
+      confidence: 1,
+      status: 'active',
+      slotKey: `slot-${index}`,
+      slotValue: String(index),
+      sessionId: '',
+      parentId: '',
+      createdAt: index,
+      updatedAt: index,
+      metadata: '{}',
+    })));
+
+    const response = await handleDashboardRequest(dbRoot, 'GET', '/api/slots?limit=25&offset=0');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 25);
+    assert.equal(response.body.items.length, 25);
+  } finally {
+    await rm(dbRoot, { recursive: true, force: true });
+  }
+});
+
 test('API errors are JSON and do not crash the server', async () => {
   if (started) {
     const invalid = await fetch(`${started.url}/api/memories?limit=501`);

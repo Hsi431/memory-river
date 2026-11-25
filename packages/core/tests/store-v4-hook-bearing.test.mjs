@@ -64,6 +64,31 @@ test('queryHookBearing returns only memories with hooks and does not materialize
   }
 });
 
+test('queryHookBearing returns hook memories beyond LanceDB’s default ten rows', async () => {
+  const paths = makePaths();
+  try {
+    const store = new MemoryStore(paths.ssd, paths.ram, 4);
+    const entries = [];
+    for (let index = 0; index < 25; index++) {
+      entries.push(await store.store({
+        text: `hook-bearing memory ${index}`,
+        vector: [0.1, 0.2, 0.3, 0.4],
+        importance: 0.7,
+        category: 'fact',
+        parentId: null,
+        metadata: JSON.stringify({ hooks: [{ keyword: `hook-${index}`, weight: 'high', weightScore: 1 }] }),
+      }));
+    }
+
+    const hookBearing = await store.queryHookBearing();
+
+    assert.equal(hookBearing.length, 25);
+    assert.deepEqual(new Set(hookBearing.map(entry => entry.id)), new Set(entries.map(entry => entry.id)));
+  } finally {
+    paths.cleanup();
+  }
+});
+
 test('metadata updates keep hasHooks derived from metadata.hooks', async () => {
   const paths = makePaths();
   try {

@@ -17,6 +17,17 @@ import { getTablesSummary } from './tables.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
+const QUERY_PAGE_SIZE = 1000;
+
+async function queryAllRows(query: any): Promise<Record<string, unknown>[]> {
+  const rows: Record<string, unknown>[] = [];
+  for (let offset = 0; ; ) {
+    const page = await (offset === 0 ? query : query.offset(offset)).limit(QUERY_PAGE_SIZE).toArray() as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < QUERY_PAGE_SIZE) return rows;
+    offset += page.length;
+  }
+}
 
 interface PageOptions {
   limit: number;
@@ -156,7 +167,7 @@ async function getMemories(dbPath: string, params: URLSearchParams): Promise<Rec
   const table = await openRequiredTable(db, dbPath, 'memories');
   let query = table.query();
   if (where) query = query.where(where);
-  const matchingRows = await query.toArray() as Record<string, unknown>[];
+  const matchingRows = await queryAllRows(query);
   const rows = stablePage(matchingRows, ['id'], page);
   return {
     ...page,
@@ -175,7 +186,7 @@ async function getGraph(dbPath: string, params: URLSearchParams): Promise<Record
   const table = await openRequiredTable(db, dbPath, 'graph_triples');
   let query = table.query();
   if (where) query = query.where(where);
-  const matchingRows = await query.toArray() as Record<string, unknown>[];
+  const matchingRows = await queryAllRows(query);
   const rows = stablePage(matchingRows, ['subject', 'relation', 'object', 'sourceMemoryId', 'createdAt'], page);
   return {
     ...page,
@@ -195,9 +206,9 @@ async function getSlots(dbPath: string, params: URLSearchParams): Promise<Record
   const where = '`slotKey` IS NOT NULL AND `slotKey` != \'\'';
   const db = await connectDb(dbPath);
   const table = await openRequiredTable(db, dbPath, 'memories');
-  const matchingRows = await table.query()
+  const matchingRows = await queryAllRows(table.query()
     .where(where)
-    .toArray() as Record<string, unknown>[];
+  );
   const rows = stablePage(matchingRows, ['id'], page);
   return {
     ...page,

@@ -58,3 +58,28 @@ test('switching embedding model clears the old model-specific API key and dimens
   assert.equal(config.embedding.dimensions, defaultOnboardingConfig().embedding.dimensions);
   assert.equal(Object.hasOwn(config.embedding, 'apiKey'), false);
 });
+
+test('changing the OpenAI embedding endpoint clears the old API key', async t => {
+  const config = await initializeWithEmbedding(t, {
+    provider: 'openai',
+    model: 'same-model',
+    baseUrl: 'https://old-embedder.test/v1',
+    apiKey: 'old-api-key',
+    dimensions: 3072,
+  }, 'openai https://new-embedder.test/v1 same-model');
+
+  assert.equal(config.embedding.baseUrl, 'https://new-embedder.test/v1');
+  assert.equal(Object.hasOwn(config.embedding, 'apiKey'), false);
+});
+
+test('switching Ollama models keeps the custom endpoint', async t => {
+  const config = await initializeWithEmbedding(t, {
+    provider: 'ollama',
+    model: 'old-model',
+    baseUrl: 'http://ollama.internal:11434',
+    dimensions: 1024,
+  }, 'ollama new-model');
+
+  assert.equal(config.embedding.model, 'new-model');
+  assert.equal(config.embedding.baseUrl, 'http://ollama.internal:11434');
+});

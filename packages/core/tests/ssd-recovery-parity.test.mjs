@@ -34,7 +34,7 @@ async function writeMemory(store, text) {
 }
 
 async function snapshot(table) {
-  const rows = await table.query().toArray();
+  const rows = await table.query().limit(1000).toArray();
   return rows.map(row => ({
     id: row.id,
     text: row.text,
@@ -92,6 +92,76 @@ test('RAM-only SSD recovery reconciles inserts, updates, and deletes before retu
 
   assert.equal(store.ssdAvailable, true);
   assert.deepEqual(await snapshot(store.ssdTable), await snapshot(store.ramTable));
+});
+
+test('RAM-only SSD recovery syncs every row after an outage with more than ten writes', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'H1-ssd-recovery-many-'));
+  const createStore = makeStores(t, root);
+  const store = createStore();
+  await store.ensureInitialized();
+
+  store.handleSsdSuccess = () => {};
+  const originalAdd = store.ssdTable.add.bind(store.ssdTable);
+  store.ssdTable.add = async () => { throw new Error('injected SSD write failure'); };
+  for (let index = 0; index < 5; index++) await writeMemory(store, `failure trigger ${index}`);
+  await waitFor(() => !store.ssdAvailable);
+  await store.memorySsdWriteQueue;
+
+  for (let index = 0; index < 25; index++) await writeMemory(store, `offline memory ${index}`);
+  await store.memorySsdWriteQueue;
+  store.ssdTable.add = originalAdd;
+  await store.probeSsdRecovery();
+
+  assert.equal(await store.ssdTable.countRows(), await store.ramTable.countRows());
+  assert.deepEqual(await snapshot(store.ssdTable), await snapshot(store.ramTable));
+});
+
+test('SSD sync stops after three changing rounds and leaves another sync pending', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'H1-ssd-sync-round-limit-'));
+  const createStore = makeStores(t, root);
+  const store = createStore();
+  await store.ensureInitialized();
+  await writeMemory(store, 'initial memory');
+  await store.memorySsdWriteQueue;
+  store.ssdAvailable = false;
+  store.ssdNeedsSync = true;
+
+  let rounds = 0;
+  const warnings = [];
+  const originalMergeInsert = store.ssdTable.mergeInsert.bind(store.ssdTable);
+  const originalWarn = console.warn;
+  store.ssdTable.mergeInsert = (...args) => {
+    let merge = originalMergeInsert(...args);
+    return {
+      whenMatchedUpdateAll(...methodArgs) {
+        merge = merge.whenMatchedUpdateAll(...methodArgs);
+        return this;
+      },
+      whenNotMatchedInsertAll(...methodArgs) {
+        merge = merge.whenNotMatchedInsertAll(...methodArgs);
+        return this;
+      },
+      async execute(rows) {
+        await merge.execute(rows);
+        rounds++;
+        if (rounds <= 4) await writeMemory(store, `concurrent memory ${rounds}`);
+      },
+    };
+  };
+  console.warn = (...values) => warnings.push(values.join(' '));
+  try {
+    await store.syncSsdFromRam();
+    await store.memorySsdWriteQueue;
+
+    assert.deepEqual({
+      rounds,
+      needsSync: store.ssdNeedsSync,
+      warned: warnings.some(message => message.includes('did not converge')),
+    }, { rounds: 3, needsSync: true, warned: true });
+  } finally {
+    store.ssdTable.mergeInsert = originalMergeInsert;
+    console.warn = originalWarn;
+  }
 });
 
 test('startup with non-empty RAM reconciles the SSD from the RAM table', async (t) => {

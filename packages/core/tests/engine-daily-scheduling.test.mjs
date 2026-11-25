@@ -81,6 +81,128 @@ function createEngine(root) {
   return engine;
 }
 
+test('overlapping direct night consolidation calls run only once', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'F3-night-reentrancy-'));
+  const engine = createEngine(root);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+    engine.clearNightConsolidatorTimers();
+    engine.clearCleanupEngineTimers();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  engine.nightConsolidatorRef = {
+    async consolidateRange() {
+      calls += 1;
+      await gate;
+      return {
+        plan: { processedCount: 1, decisions: [], mergedCount: 0, updatedCount: 0, keptCount: 1 },
+        errors: [],
+      };
+    },
+  };
+
+  const first = engine.runNightConsolidatorNow('run-1');
+  const second = engine.runNightConsolidatorNow('run-2');
+
+  assert.equal(calls, 1, 'a second direct call must not enter consolidation');
+  release();
+  await Promise.all([first, second]);
+  assert.match(warnings.join('\n'), /run skipped.*still in progress/);
+});
+
+test('night schedule keeps triggering while a previous consolidation is pending', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'F3-night-stalled-schedule-'));
+  const engine = createEngine(root);
+  const start = Date.UTC(2026, 2, 8, 6, 30);
+  const clock = installFakeClock(start);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+    engine.clearNightConsolidatorTimers();
+    engine.clearCleanupEngineTimers();
+    clock.restore();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  engine.nightConsolidatorRef = {
+    async consolidateRange() {
+      calls += 1;
+      await gate;
+      return {
+        plan: { processedCount: 1, decisions: [], mergedCount: 0, updatedCount: 0, keptCount: 1 },
+        errors: [],
+      };
+    },
+  };
+  engine.tryRunNightConsolidator = MemoryRiverEngine.prototype.tryRunNightConsolidator.bind(engine);
+
+  engine.scheduleNightConsolidator();
+  const firstTimer = clock.timeouts[0];
+  clock.setNow(start + firstTimer.delay);
+  const firstRun = firstTimer.callback();
+  for (let i = 0; i < 5 && calls === 0; i += 1) await Promise.resolve();
+
+  const nextTimer = clock.timeouts[2];
+  assert.ok(nextTimer, 'the next daily timer must be installed before waiting for this run');
+  assert.equal(calls, 1);
+  clock.setNow(start + firstTimer.delay + nextTimer.delay);
+  await nextTimer.callback();
+
+  assert.equal(calls, 1, 'a scheduled run must skip while the prior run is pending');
+  assert.match(warnings.join('\n'), /scheduled run skipped.*runningFor=86400000 ms/);
+  release();
+  await firstRun;
+});
+
+test('cleanup schedule keeps triggering while a previous cleanup is pending', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'F3-cleanup-stalled-schedule-'));
+  const engine = createEngine(root);
+  const start = Date.UTC(2026, 10, 1, 5, 30);
+  const clock = installFakeClock(start);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+    engine.clearNightConsolidatorTimers();
+    engine.clearCleanupEngineTimers();
+    clock.restore();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  engine.runCleanupEngineNow = async () => {
+    calls += 1;
+    await gate;
+  };
+
+  engine.scheduleCleanupEngine();
+  const firstTimer = clock.timeouts[0];
+  clock.setNow(start + firstTimer.delay);
+  const firstRun = firstTimer.callback();
+  const nextTimer = clock.timeouts[1];
+  assert.ok(nextTimer, 'the next daily timer must be installed before waiting for this run');
+  assert.equal(calls, 1);
+  clock.setNow(start + firstTimer.delay + nextTimer.delay);
+  await nextTimer.callback();
+
+  assert.equal(calls, 1, 'a scheduled run must skip while the prior run is pending');
+  assert.match(warnings.join('\n'), /scheduled run skipped.*runningFor=86400000 ms/);
+  release();
+  await firstRun;
+});
+
 test('night schedule uses configured timezone across DST and recalculates after a long run', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'F3-night-schedule-'));
   const engine = createEngine(root);
