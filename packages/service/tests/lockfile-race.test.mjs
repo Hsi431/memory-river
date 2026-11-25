@@ -127,8 +127,12 @@ test('exactly one process acquires a stale service lock', async (t) => {
   fs.writeFileSync(lockPath, `${stalePid}\n`);
   t.after(async () => {
     const running = children.filter((child) => child.exitCode === null && child.connected);
-    for (const child of running) child.send('release');
-    await Promise.all(running.map((child) => new Promise((resolve) => child.once('exit', resolve))));
+    // A contender can exit between the filter and send; the IPC write then fails with EPIPE.
+    // Swallow that per-send error and don't wait for children that are already gone.
+    for (const child of running) child.send('release', () => {});
+    await Promise.all(running.map((child) => (child.exitCode !== null || child.signalCode !== null)
+      ? undefined
+      : new Promise((resolve) => child.once('exit', resolve))));
     try {
       fs.rmSync(dataDir, { recursive: true, force: true });
     } catch (error) {
